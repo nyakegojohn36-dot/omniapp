@@ -21,7 +21,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const httpServer = http.createServer(app);
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({
   verify: (req: any, _res, buf) => {
@@ -38,9 +38,10 @@ const tenant = SEED_TENANTS[0];
 const initialToken = process.env.WHATSAPP_ACCESS_TOKEN || '';
 const initialAppSecret = process.env.WHATSAPP_APP_SECRET || '';
 const initialPhoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
-const initialWabaId = process.env.WHATSAPP_WABA_ID || '1402546412031884';
+const initialWabaId = process.env.WHATSAPP_WABA_ID || '';
 const initialDisplayPhone = process.env.WHATSAPP_DISPLAY_PHONE || 'Meta Developer Sandbox';
-const initialMode = (process.env.WHATSAPP_OPERATING_MODE as any) || 'DEVELOPER_SANDBOX';
+const initialVerifyToken = process.env.WHATSAPP_VERIFY_TOKEN || '';
+const initialMode = (process.env.WHATSAPP_OPERATING_MODE as any) || 'SIMULATED_DEMO';
 
 const whatsappService = new WhatsAppCloudService(
   {
@@ -48,6 +49,7 @@ const whatsappService = new WhatsAppCloudService(
     phoneNumberId: initialPhoneNumberId,
     wabaId: initialWabaId,
     displayPhoneNumber: initialDisplayPhone,
+    verifyToken: initialVerifyToken,
     authorizedTestRecipient: '',
   },
   initialToken,
@@ -81,7 +83,7 @@ app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
 // 2. Meta WhatsApp Inbound Webhook Event Receiver (POST)
 const handleInboundWebhook = (req: Request, res: Response) => {
   try {
-    // Verify HMAC-SHA256 signature if in LIVE_PRODUCTION or if App Secret is configured
+    // Verify HMAC-SHA256 signatures for every webhook mode.
     const sigHeader = req.headers['x-hub-signature-256'] as string | undefined;
     const sigVerification = whatsappService.verifySignature((req as any).rawBody, sigHeader);
     if (!sigVerification.valid) {

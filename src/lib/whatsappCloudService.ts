@@ -62,23 +62,22 @@ export const SUPPORTED_GRAPH_API_VERSIONS: Record<string, GraphApiVersionInfo> =
 };
 
 export const DEFAULT_WHATSAPP_CONFIG: WhatsAppCloudConfig = {
-  mode: 'DEVELOPER_SANDBOX',
-  wabaId: '1402546412031884',
+  mode: 'SIMULATED_DEMO',
+  wabaId: '',
   phoneNumberId: '',
-  displayPhoneNumber: 'Meta Developer Sandbox',
-  verifyToken: 'omni_whatsapp_verify_token_2026',
-  accessTokenMasked: 'EAAX...0DFV',
-  hasAccessToken: true,
+  displayPhoneNumber: 'Not configured',
+  verifyToken: '',
+  accessTokenMasked: '',
+  hasAccessToken: false,
   graphApiVersion: DEFAULT_GRAPH_API_VERSION,
   authorizedTestRecipient: '',
   webhookCallbackUrl: '/api/whatsapp/webhook',
   autoAiReplies: true,
   aiBusinessPrompt: 'You are an authoritative, grounded ecommerce assistant for Safari Peak Outfitters Kenya. Never hallucinate prices or inventory. Provide prices in KSh and delivery policies for Nairobi and upcountry Kenya.',
   allowSelfOrderCreation: true,
-  connectedAt: new Date().toISOString(),
-  configurationSaved: true,
-  credentialsValidated: true,
-  webhookVerified: true,
+  configurationSaved: false,
+  credentialsValidated: false,
+  webhookVerified: false,
   messageDeliveryActive: false,
 };
 
@@ -117,7 +116,9 @@ export class WhatsAppCloudService {
       this.config.metaAppSecretMasked = this.maskSecret(secretAppSecret);
     }
     this.recalculateDiagnosticStatus();
-    this.seedInitialHistory();
+    if (this.config.mode === 'SIMULATED_DEMO') {
+      this.seedInitialHistory();
+    }
   }
 
   private seedInitialHistory() {
@@ -188,6 +189,9 @@ export class WhatsAppCloudService {
     rawAccessToken?: string,
     rawAppSecret?: string
   ): WhatsAppCloudConfig {
+    if (updates.verifyToken !== undefined && updates.verifyToken !== this.config.verifyToken) {
+      this.config.webhookVerified = false;
+    }
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
         (this.config as any)[key] = value;
@@ -237,15 +241,9 @@ export class WhatsAppCloudService {
     signatureHeader?: string
   ): { valid: boolean; reason: string } {
     if (!this.appSecret) {
-      if (this.config.mode === 'LIVE_PRODUCTION') {
-        return {
-          valid: false,
-          reason: 'LIVE_PRODUCTION mode requires WHATSAPP_APP_SECRET for security enforcement.',
-        };
-      }
       return {
-        valid: true,
-        reason: 'Signature verification bypassed: App Secret not configured yet. Configure WHATSAPP_APP_SECRET in Settings for HMAC protection.',
+        valid: false,
+        reason: 'WHATSAPP_APP_SECRET is required to verify Meta webhook signatures.',
       };
     }
 
@@ -346,14 +344,22 @@ export class WhatsAppCloudService {
       return { verified: false, error: 'Missing hub.mode or hub.verify_token parameter' };
     }
 
-    const expected = (this.config.verifyToken || 'omni_whatsapp_verify_token_2026').trim();
+    const expected = this.config.verifyToken.trim();
     const cleanToken = token.trim();
-    if (mode === 'subscribe' && (cleanToken === expected || cleanToken === 'omni_whatsapp_verify_token_2026')) {
+    if (!expected) {
+      return { verified: false, error: 'Webhook verification token is not configured.' };
+    }
+
+    const expectedBuffer = Buffer.from(expected, 'utf8');
+    const suppliedBuffer = Buffer.from(cleanToken, 'utf8');
+    const tokenMatches = expectedBuffer.length === suppliedBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, suppliedBuffer);
+    if (mode === 'subscribe' && tokenMatches) {
       this.config.webhookVerified = true;
       return { verified: true, challenge: challenge || '' };
     }
 
-    return { verified: false, error: `Token mismatch. Received "${token}", expected "${expected}"` };
+    return { verified: false, error: 'Webhook verification token does not match.' };
   }
 
   /**

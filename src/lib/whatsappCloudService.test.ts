@@ -23,6 +23,34 @@ test('WhatsApp Cloud Service: verifies Meta webhook handshake correctly', () => 
   assert.equal(fail.verified, false);
 });
 
+test('WhatsApp Cloud Service: does not accept a fallback or unconfigured webhook token', () => {
+  const service = new WhatsAppCloudService();
+  const defaultTokenAttempt = service.verifyWebhook({
+    'hub.mode': 'subscribe',
+    'hub.verify_token': 'omni_whatsapp_verify_token_2026',
+    'hub.challenge': 'challenge',
+  });
+  assert.equal(defaultTokenAttempt.verified, false);
+
+  const configuredService = new WhatsAppCloudService({ verifyToken: 'private-test-token' });
+  const mismatch = configuredService.verifyWebhook({
+    'hub.mode': 'subscribe',
+    'hub.verify_token': 'wrong-token',
+    'hub.challenge': 'challenge',
+  });
+  assert.equal(mismatch.verified, false);
+  assert.equal(mismatch.error?.includes('private-test-token'), false);
+});
+
+test('WhatsApp Cloud Service: defaults to an unconnected simulated configuration', () => {
+  const config = new WhatsAppCloudService().getConfig();
+  assert.equal(config.mode, 'SIMULATED_DEMO');
+  assert.equal(config.configurationSaved, false);
+  assert.equal(config.credentialsValidated, false);
+  assert.equal(config.webhookVerified, false);
+  assert.equal(config.hasAccessToken, false);
+});
+
 test('WhatsApp Cloud Service: completes full multi-step order placement journey via WhatsApp', () => {
   const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
   const products = [...SEED_PRODUCTS];
@@ -252,6 +280,10 @@ test('WhatsApp Cloud Service: verifies incoming Meta webhook HMAC-SHA256 signatu
   const prodServiceWithoutSecret = new WhatsAppCloudService({ mode: 'LIVE_PRODUCTION' });
   const check4 = prodServiceWithoutSecret.verifySignature(rawPayload, validHeader);
   assert.equal(check4.valid, false);
+
+  const testServiceWithoutSecret = new WhatsAppCloudService({ mode: 'META_TEST' });
+  const check5 = testServiceWithoutSecret.verifySignature(rawPayload, validHeader);
+  assert.equal(check5.valid, false);
 });
 
 test('WhatsApp Cloud Service: preserves existing secrets when updating configuration without raw tokens', () => {
@@ -358,4 +390,3 @@ test('WhatsApp Cloud Service: tracks message delivery statuses (SENT -> DELIVERE
   assert.equal(outbound.status, 'DELIVERED');
   assert.equal(service.getConfig().messageDeliveryActive, true);
 });
-
