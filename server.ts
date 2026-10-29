@@ -22,12 +22,35 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const httpServer = http.createServer(app);
 const PORT = Number(process.env.PORT) || 3000;
+const webhookOnlyMode =
+  process.env.NODE_ENV === 'production' || process.env.WHATSAPP_WEBHOOK_ONLY === 'true';
 
 app.use(express.json({
   verify: (req: any, _res, buf) => {
     req.rawBody = buf;
   },
 }));
+
+app.use((req: Request, res: Response, next) => {
+  if (!webhookOnlyMode) {
+    return next();
+  }
+
+  const requestPath = req.path.toLowerCase();
+  const isWebhookRequest =
+    requestPath === '/api/whatsapp/webhook' && (req.method === 'GET' || req.method === 'POST');
+  if (isWebhookRequest || (requestPath === '/health' && req.method === 'GET')) {
+    return next();
+  }
+
+  if (requestPath === '/api' || requestPath.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  return next();
+});
+
+app.set('trust proxy', 1);
 
 // In-memory backend stores for the full-stack app
 const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
@@ -150,6 +173,10 @@ const handleInboundWebhook = (req: Request, res: Response) => {
 
 app.post('/api/whatsapp/webhook', handleInboundWebhook);
 app.post('/api/webhooks/whatsapp', handleInboundWebhook);
+
+app.get('/health', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'ok' });
+});
 
 // 3. Configuration Management API (GET & POST)
 app.get('/api/whatsapp/config', (_req: Request, res: Response) => {
@@ -411,7 +438,9 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[SokoFlow] Running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `[SokoFlow] Running on http://0.0.0.0:${PORT}${webhookOnlyMode ? ' (WhatsApp webhook-only mode)' : ''}`
+    );
   });
 }
 
