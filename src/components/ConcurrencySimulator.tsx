@@ -164,7 +164,7 @@ export const ConcurrencySimulator: React.FC<ConcurrencySimulatorProps> = ({ isOp
               <span>Initial Physical: 1 unit · Available: 1 unit</span>
             </div>
             <p>
-              Under naive read-then-write logic, both requests see Available = 1, leading to duplicate reservations and an overselling disaster. OmniCommerce AI uses mutex atomic locking to guarantee that exactly <strong>one</strong> request wins the reservation, while the other is gracefully rejected and offered out-of-stock recovery.
+              Under naive read-then-write logic, both requests see Available = 1, leading to duplicate reservations and an overselling disaster. SokoFlow uses mutex atomic locking to guarantee that exactly <strong>one</strong> request wins the reservation, while the other is gracefully rejected and offered out-of-stock recovery.
             </p>
           </div>
 

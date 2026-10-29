@@ -1,5 +1,5 @@
 /**
- * Universal Data Models & Types for OmniCommerce AI
+ * Universal Data Models & Types for SokoFlow
  * Global Multi-Tenant Ecommerce Automation Platform
  */
 
@@ -365,4 +365,3 @@ export interface StaffMember {
   lastActive: string;
   assignedWarehouse?: string;
 }
-

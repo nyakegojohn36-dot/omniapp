@@ -68,6 +68,7 @@ interface BusinessOwnerWorkspaceProps {
   inventories: WarehouseInventory[];
   activeReservationsCount: number;
   currentUser?: User;
+  orderSyncStatus: 'loading' | 'connected' | 'error';
   users?: User[];
   onUpdateUserRole?: (targetUserId: string, newRole: UserRole, reason?: string) => void;
   onSwitchUser?: (user: User) => void;
@@ -108,6 +109,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   inventories,
   activeReservationsCount,
   currentUser,
+  orderSyncStatus,
   users = [],
   onUpdateUserRole,
   onSwitchUser,
@@ -127,12 +129,12 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   const [conversationalSubTab, setConversationalSubTab] = useState<'assistant' | 'whatsapp'>('assistant');
   const [integrationsSubTab, setIntegrationsSubTab] = useState<'connectors' | 'automation'>('connectors');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [showDashboardRoleTools, setShowDashboardRoleTools] = useState(false);
   const handleSelectNav = (menu: OwnerMenuSection) => {
     setActiveMenu(menu);
     setMobileNavOpen(false);
   };
   const [dateRange, setDateRange] = useState<'today' | '7d' | '30d' | '90d'>('30d');
-  const [searchQuery, setSearchQuery] = useState('');
   const [integrations, setIntegrations] = useState<IntegrationConfig[]>(SEED_INTEGRATIONS);
   const [staffMembers, setStaffMembers] = useState<StaffMember[]>(SEED_STAFF_MEMBERS);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
@@ -228,11 +230,20 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
 
   // Calculations
-  const totalRevenueCents = orders
-    .filter((o) => o.isPaid)
-    .reduce((acc, o) => acc + o.totalCents, 0);
-
-  const pendingCount = orders.filter((o) => o.status === 'AWAITING_PAYMENT').length;
+  const periodStart = new Date();
+  if (dateRange === 'today') {
+    periodStart.setHours(0, 0, 0, 0);
+  } else {
+    periodStart.setDate(periodStart.getDate() - Number.parseInt(dateRange, 10));
+  }
+  const periodOrders = orders.filter((order) => {
+    const createdAt = Date.parse(order.createdAt);
+    return Number.isFinite(createdAt) && createdAt >= periodStart.getTime();
+  });
+  const periodRevenueCents = periodOrders
+    .filter((order) => order.isPaid)
+    .reduce((total, order) => total + order.totalCents, 0);
+  const pendingCount = orders.filter((order) => order.status === 'AWAITING_PAYMENT').length;
   const processingCount = orders.filter(
     (o) => o.status === 'CONFIRMED' || o.status === 'PROCESSING' || o.status === 'READY_FOR_DISPATCH'
   ).length;
@@ -244,6 +255,22 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
     const avail = Math.max(0, i.physicalStock - (i.reservedStock + i.quarantineStock));
     return avail > 0 && avail <= i.lowStockThreshold;
   });
+  const channelLabels: Record<Tenant['channels'][number], string> = {
+    WEB: 'Online store',
+    WHATSAPP: 'WhatsApp',
+    SHOPIFY_SYNC: 'Shopify',
+    MARKETPLACE: 'Marketplace',
+  };
+  const channelSummaries = tenant.channels.map((channel) => {
+    const channelOrders = periodOrders.filter((order) => order.sourceChannel === channel);
+    return {
+      channel,
+      orderCount: channelOrders.length,
+      paidSalesCents: channelOrders
+        .filter((order) => order.isPaid)
+        .reduce((total, order) => total + order.totalCents, 0),
+    };
+  });
 
   const handleToggleIntegration = (id: string) => {
     setIntegrations((prev) =>
@@ -252,7 +279,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           ? {
               ...int,
               status: int.status === 'CONNECTED' ? 'DISCONNECTED' : 'CONNECTED',
-              lastSyncAt: 'Just now',
             }
           : int
       )
@@ -292,33 +318,59 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
     setTimeout(() => setSettingsNotice(null), 3000);
   };
 
+  const sectionTitles: Record<OwnerMenuSection, string> = {
+    dashboard: 'Overview',
+    orders: 'Orders',
+    products: 'Products',
+    inventory: 'Inventory',
+    customers: 'Customers',
+    fulfilment: 'Fulfilment',
+    support: 'Customer support',
+    sales_channels: 'AI & WhatsApp sales',
+    whatsapp: 'AI & WhatsApp sales',
+    automation: 'Integrations',
+    analytics: 'Analytics',
+    integrations: 'Integrations',
+    team: 'Team & access',
+    billing: 'Billing',
+    settings: 'Store settings',
+  };
+
   return (
     <div className="flex bg-slate-50 min-h-[calc(100vh-65px)] relative overflow-x-hidden">
       {/* Mobile Drawer Backdrop */}
       {mobileNavOpen && (
-        <div
+        <button
+          type="button"
+          aria-label="Close navigation menu"
           onClick={() => setMobileNavOpen(false)}
           className="fixed inset-0 bg-slate-950/60 z-30 md:hidden backdrop-blur-xs transition-opacity"
         />
       )}
 
-      {/* 1. SHOPFLOW STYLE DEEP NAVY SIDEBAR */}
       <aside
+        id="owner-navigation"
+        aria-label="Owner workspace navigation"
         className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 flex flex-col shrink-0 border-r border-slate-800 transition-transform duration-200 md:static md:translate-x-0 ${
-          mobileNavOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          mobileNavOpen ? 'visible translate-x-0' : 'invisible -translate-x-full md:visible md:translate-x-0'
         }`}
       >
         {/* Store Profile Section */}
         <div className="p-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-teal-500 to-blue-600 text-white font-black flex items-center justify-center text-sm shadow-md shrink-0">
-              NP
+              {tenant.name
+                .split(/\s+/)
+                .slice(0, 2)
+                .map((word) => word[0])
+                .join('')
+                .toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
               <div className="font-bold text-sm text-white truncate">{tenant.name}</div>
-              <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>Store Live · Online</span>
+              <div className="flex items-center gap-1.5 text-[11px] text-amber-300 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-300"></span>
+                <span>Demo data</span>
               </div>
             </div>
           </div>
@@ -332,15 +384,16 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
         </div>
 
         {/* Sidebar Nav Links */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-6 text-xs">
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-6 text-xs" aria-label="Owner workspace sections">
           {/* Main Navigation Group */}
           <div className="space-y-1">
             <div className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-              Main Operations
+              Commerce
             </div>
 
             <button
               onClick={() => handleSelectNav('dashboard')}
+              aria-current={activeMenu === 'dashboard' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'dashboard'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -355,6 +408,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('orders')}
+              aria-current={activeMenu === 'orders' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'orders'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -372,6 +426,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('products')}
+              aria-current={activeMenu === 'products' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'products'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -387,6 +442,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('inventory')}
+              aria-current={activeMenu === 'inventory' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'inventory'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -406,6 +462,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('customers')}
+              aria-current={activeMenu === 'customers' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'customers'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -423,6 +480,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('fulfilment')}
+              aria-current={activeMenu === 'fulfilment' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'fulfilment'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -442,11 +500,12 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {/* AI & Automation Group */}
           <div className="space-y-1">
             <div className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-              Intelligence & Channels
+              Customer & Growth
             </div>
 
             <button
               onClick={() => handleSelectNav('support')}
+              aria-current={activeMenu === 'support' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'support'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -458,12 +517,13 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                 <span>Customer Support</span>
               </div>
               <span className="px-1.5 py-0.5 bg-sky-500/20 text-sky-300 rounded font-mono text-[10px] font-bold">
-                Live Desk
+                Inbox
               </span>
             </button>
 
             <button
               onClick={() => handleSelectNav('sales_channels')}
+              aria-current={activeMenu === 'sales_channels' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'sales_channels' || activeMenu === 'whatsapp'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -478,6 +538,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('analytics')}
+              aria-current={activeMenu === 'analytics' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'analytics'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -492,6 +553,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('integrations')}
+              aria-current={activeMenu === 'integrations' || activeMenu === 'automation' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'integrations' || activeMenu === 'automation'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -502,8 +564,8 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                 <Layers className="w-4 h-4 text-slate-400" />
                 <span>Integrations & Webhooks</span>
               </div>
-              <span className="px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 rounded font-mono text-[10px] font-bold">
-                6 Active
+              <span className="px-1.5 py-0.2 bg-amber-500/20 text-amber-200 rounded font-mono text-[10px] font-bold">
+                Demo
               </span>
             </button>
           </div>
@@ -511,11 +573,12 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {/* Settings & Configuration Group */}
           <div className="space-y-1">
             <div className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-              Organization & Access
+              Settings & Access
             </div>
 
             <button
               onClick={() => handleSelectNav('team')}
+              aria-current={activeMenu === 'team' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'team'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -530,6 +593,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('billing')}
+              aria-current={activeMenu === 'billing' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'billing'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -544,6 +608,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
             <button
               onClick={() => handleSelectNav('settings')}
+              aria-current={activeMenu === 'settings' ? 'page' : undefined}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg font-medium transition-colors ${
                 activeMenu === 'settings'
                   ? 'bg-teal-500/10 text-teal-300 font-semibold border-l-2 border-teal-400'
@@ -556,13 +621,13 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
               </div>
             </button>
           </div>
-        </div>
+        </nav>
 
         {/* Sidebar Footer User Info */}
         <div className="p-3 border-t border-slate-800 bg-slate-950/50 flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-7 h-7 rounded-full bg-slate-700 text-white font-bold flex items-center justify-center text-[11px]">
-              {(currentUser?.name || 'Alex Rivera')
+              {(currentUser?.name || 'Business Owner')
                 .split(' ')
                 .map((p) => p[0])
                 .join('')
@@ -571,75 +636,94 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
             </div>
             <div className="truncate">
               <div className="text-white font-semibold truncate">{currentUser?.name || 'Alex Rivera'}</div>
-              <div className="text-[10px] text-slate-500">Business Owner (Admin)</div>
+              <div className="text-[10px] text-slate-500">Business Owner</div>
             </div>
           </div>
         </div>
       </aside>
 
-      {/* 2. MAIN WORKSPACE CONTENT CONTAINER */}
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-        {/* Top Header Bar */}
-        <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 flex items-center justify-between gap-4 sticky top-0 z-20">
-          <div className="flex items-center gap-3 flex-1 max-w-xl">
-            <button
-              onClick={() => setMobileNavOpen(true)}
-              className="p-1.5 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg md:hidden"
-              aria-label="Open Navigation Menu"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <div className="relative w-full">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search orders, products, customers (⌘K)..."
-                className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-900 shadow-2xs"
-              />
+      <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-20">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={() => setMobileNavOpen(true)}
+            className="p-1.5 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg md:hidden"
+            aria-label="Open Navigation Menu"
+            aria-expanded={mobileNavOpen}
+            aria-controls="owner-navigation"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-sm font-bold text-slate-900 truncate">{sectionTitles[activeMenu]}</h1>
+              <span
+                role={orderSyncStatus === 'error' ? 'alert' : 'status'}
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  orderSyncStatus === 'error'
+                    ? 'bg-amber-50 text-amber-900'
+                    : orderSyncStatus === 'loading'
+                    ? 'bg-slate-100 text-slate-700'
+                    : 'bg-emerald-50 text-emerald-800'
+                }`}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    orderSyncStatus === 'error'
+                      ? 'bg-amber-600'
+                      : orderSyncStatus === 'loading'
+                      ? 'bg-slate-500'
+                      : 'bg-emerald-600'
+                  }`}
+                />
+                {orderSyncStatus === 'error'
+                  ? 'Sync unavailable · showing current data'
+                  : orderSyncStatus === 'loading'
+                  ? 'Syncing demo orders…'
+                  : 'Demo API synced'}
+              </span>
             </div>
+            <p className="text-[11px] text-slate-500 truncate">{tenant.name}</p>
           </div>
+        </div>
 
-          <div className="flex items-center gap-3">
-            {/* Date Range Selector */}
-            <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg text-xs font-semibold">
-              {(['today', '7d', '30d', '90d'] as const).map((r) => (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {(activeMenu === 'dashboard' || activeMenu === 'analytics') && (
+            <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg text-xs font-semibold" role="group" aria-label="Filter dashboard by date">
+              {(['today', '7d', '30d', '90d'] as const).map((range) => (
                 <button
-                  key={r}
-                  onClick={() => setDateRange(r)}
-                  className={`px-2.5 py-1 rounded-md transition-all uppercase text-[11px] ${
-                    dateRange === r
+                  key={range}
+                  type="button"
+                  onClick={() => setDateRange(range)}
+                  aria-pressed={dateRange === range}
+                  className={`px-2.5 py-1.5 rounded-md transition-colors uppercase text-[11px] ${
+                    dateRange === range
                       ? 'bg-white text-slate-900 shadow-2xs font-bold'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {r}
+                  {range === 'today' ? 'Today' : range}
                 </button>
               ))}
             </div>
+          )}
 
-            <button
-              onClick={onSweepExpired}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
-              <span className="hidden sm:inline">Sweep Holds</span>
-            </button>
-
+          {activeMenu === 'orders' && (
             <button
               onClick={handleExportOrdersCsv}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors shadow-2xs cursor-pointer"
-              title="Download Kenyan orders report as CSV"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors"
+              title="Download orders as CSV"
             >
               <Download className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="hidden sm:inline">Export Orders (CSV)</span>
+              <span>Export CSV</span>
             </button>
-          </div>
-        </header>
+          )}
+        </div>
+      </header>
 
         {/* View Router based on activeMenu */}
-        <div className="p-6 space-y-6">
+        <div className="p-4 sm:p-6 space-y-6">
           {/* Global Role Change & RBAC Alert Notice */}
           {roleChangeNotice && (
             <div
@@ -692,254 +776,169 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {/* SECTION: DASHBOARD */}
           {activeMenu === 'dashboard' && (
             <div className="space-y-6">
-              {/* Executive Welcome & Status */}
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">
-                    Welcome back, {(currentUser?.name || 'Alex').split(' ')[0]}
+                    Welcome, {(currentUser?.name || 'Business Owner').split(' ')[0]}
                   </h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Here is what is happening across your global sales channels and fulfillment centers today.
+                  <p className="text-sm text-slate-600 mt-1">
+                    Orders and inventory at a glance for {tenant.name}.
+                  </p>
+                  <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900">
+                    Demo workspace · no live provider connections
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
-                    All Automated Workflows Operational
-                  </span>
-                </div>
-              </div>
-
-              {/* High-Visibility Admin Role Delegation Hero Strip */}
-              <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-5 shadow-md border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1.5 max-w-2xl">
-                  <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[11px] font-black uppercase tracking-wider inline-flex items-center gap-1">
-                      <ShieldCheck className="w-3.5 h-3.5 text-slate-950" />
-                      Admin Role Management
-                    </span>
-                    <span className="text-xs text-indigo-300 font-mono">
-                      {users.filter((u) => u.role === 'CUSTOMER').length} Customer{users.filter((u) => u.role === 'CUSTOMER').length === 1 ? '' : 's'} Promotable
-                    </span>
-                  </div>
-                  <h3 className="text-base font-bold text-white tracking-tight">
-                    Promote Customers to Staff or Demote Staff Back to Customer
-                  </h3>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    External sign-ups strictly start as customers (storefront-only). As the Admin, you can promote any customer to <strong>Fulfillment Staff</strong> (warehouse queues + storefront), <strong>Support Staff</strong>, or <strong>Co-Admin</strong>.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => {
-                      const el = document.getElementById('admin-promotion-center');
-                      if (el) {
-                        el.scrollIntoView({ behavior: 'smooth' });
-                      } else {
-                        setActiveMenu('team');
-                      }
-                    }}
-                    className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                    type="button"
+                    onClick={() => setActiveMenu('orders')}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
                   >
-                    <ArrowUpRight className="w-3.5 h-3.5" />
-                    <span>Promote / Demote Roles Now</span>
+                    View orders <ArrowRight className="h-3.5 w-3.5" />
                   </button>
-
                   <button
-                    onClick={() => setActiveMenu('team')}
-                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5"
+                    type="button"
+                    onClick={() => setActiveMenu('inventory')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   >
-                    <span>Full RBAC Matrix</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
+                    Review inventory
                   </button>
                 </div>
               </div>
 
               {/* KPI Cards Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {/* Total Sales */}
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-2">
-                  <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                    <span>Total Sales</span>
-                    <TrendingUp className="w-4 h-4 text-emerald-600" />
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                  <div className="flex items-center justify-between text-xs font-medium text-slate-600">
+                    <span>Paid sales</span>
+                    <TrendingUp className="h-4 w-4 text-emerald-600" />
                   </div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
-                      {formatCurrency(totalRevenueCents || 1248200, tenant.currency)}
-                    </span>
-                    <span className="text-xs font-semibold text-emerald-600">+14.2%</span>
+                  <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                    {formatCurrency(periodRevenueCents, tenant.currency)}
                   </div>
-                  <div className="text-[11px] text-slate-400">vs. previous period</div>
+                  <p className="mt-1 text-xs text-slate-500">Selected period</p>
                 </div>
-
-                {/* Total Orders */}
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-2">
-                  <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                    <span>Total Orders</span>
-                    <ShoppingCart className="w-4 h-4 text-blue-600" />
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                  <div className="flex items-center justify-between text-xs font-medium text-slate-600">
+                    <span>Orders</span>
+                    <ShoppingCart className="h-4 w-4 text-blue-600" />
                   </div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
-                      148
-                    </span>
-                    <span className="text-xs font-semibold text-emerald-600">+8.4%</span>
+                  <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                    {periodOrders.length}
                   </div>
-                  <div className="text-[11px] text-slate-400">98.2% automated conversion</div>
+                  <p className="mt-1 text-xs text-slate-500">Created in selected period</p>
                 </div>
-
-                {/* Awaiting Fulfilment */}
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-2">
-                  <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                    <span>Awaiting Fulfilment</span>
-                    <Clock className="w-4 h-4 text-amber-500" />
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                  <div className="flex items-center justify-between text-xs font-medium text-slate-600">
+                    <span>Awaiting payment</span>
+                    <Clock className="h-4 w-4 text-amber-600" />
                   </div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
-                      {processingCount + 12}
-                    </span>
-                    <span className="text-xs font-semibold text-amber-600">On Track</span>
+                  <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                    {pendingCount}
                   </div>
-                  <div className="text-[11px] text-slate-400">Next warehouse dispatch in 42m</div>
+                  <p className="mt-1 text-xs text-slate-500">Needs payment confirmation</p>
                 </div>
-
-                {/* Conversion Rate */}
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-2">
-                  <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                    <span>Conversion Rate</span>
-                    <Bot className="w-4 h-4 text-purple-600" />
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                  <div className="flex items-center justify-between text-xs font-medium text-slate-600">
+                    <span>In fulfilment</span>
+                    <Package className="h-4 w-4 text-indigo-600" />
                   </div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
-                      3.42%
-                    </span>
-                    <span className="text-xs font-semibold text-emerald-600">+0.6%</span>
+                  <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                    {processingCount}
                   </div>
-                  <div className="text-[11px] text-slate-400">AI Concierge active on web & chat</div>
+                  <p className="mt-1 text-xs text-slate-500">Active orders across all time</p>
                 </div>
               </div>
 
-              {/* Interactive Visual Sales Over Time Chart & Distribution */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Visual Chart Card */}
-                <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs space-y-4">
-                  <div className="flex items-center justify-between">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs" aria-labelledby="order-activity-heading">
+                  <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h3 className="font-bold text-sm text-slate-900">Sales Trends & Revenue Curve</h3>
-                      <p className="text-xs text-slate-500">Gross transaction volume across all regional nodes</p>
+                      <h3 id="order-activity-heading" className="text-sm font-bold text-slate-900">Order activity</h3>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {dateRange === 'today' ? 'Today' : `Last ${dateRange}`} · {periodOrders.length} orders
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2 text-xs font-mono font-bold text-slate-800">
-                      <span className="w-3 h-3 rounded-full bg-teal-500 inline-block"></span>
-                      <span>Total: {formatCurrency(totalRevenueCents, tenant.currency)}</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveMenu('orders')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-950"
+                    >
+                      View orders <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-xl bg-amber-50 p-3">
+                      <dt className="text-xs text-amber-900">Awaiting payment</dt>
+                      <dd className="mt-1 font-mono text-lg font-bold text-amber-950">
+                        {periodOrders.filter((order) => order.status === 'AWAITING_PAYMENT').length}
+                      </dd>
+                    </div>
+                    <div className="rounded-xl bg-blue-50 p-3">
+                      <dt className="text-xs text-blue-900">In fulfilment</dt>
+                      <dd className="mt-1 font-mono text-lg font-bold text-blue-950">
+                        {periodOrders.filter((order) =>
+                          ['CONFIRMED', 'PROCESSING', 'READY_FOR_DISPATCH'].includes(order.status)
+                        ).length}
+                      </dd>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 p-3">
+                      <dt className="text-xs text-emerald-900">Delivered</dt>
+                      <dd className="mt-1 font-mono text-lg font-bold text-emerald-950">
+                        {periodOrders.filter((order) => order.status === 'DELIVERED').length}
+                      </dd>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-3">
+                      <dt className="text-xs text-slate-700">Paid sales</dt>
+                      <dd className="mt-1 font-mono text-lg font-bold text-slate-950">
+                        {formatCurrency(periodRevenueCents, tenant.currency)}
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs" aria-labelledby="inventory-health-heading">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 id="inventory-health-heading" className="text-sm font-bold text-slate-900">Inventory attention</h3>
+                      <p className="mt-1 text-xs text-slate-500">Based on current available stock</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveMenu('inventory')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-950"
+                    >
+                      Review stock <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-red-100 bg-red-50 p-4">
+                      <p className="text-xs font-medium text-red-900">Out of stock</p>
+                      <p className="mt-1 font-mono text-2xl font-bold text-red-950">{outOfStockItems.length}</p>
+                    </div>
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                      <p className="text-xs font-medium text-amber-900">Low stock</p>
+                      <p className="mt-1 font-mono text-2xl font-bold text-amber-950">{lowStockItems.length}</p>
                     </div>
                   </div>
-
-                  {/* SVG Chart */}
-                  <div className="h-56 w-full pt-4">
-                    <svg viewBox="0 0 600 200" className="w-full h-full overflow-visible">
-                      <defs>
-                        <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#14b8a6" stopOpacity="0.35" />
-                          <stop offset="100%" stopColor="#14b8a6" stopOpacity="0.0" />
-                        </linearGradient>
-                      </defs>
-                      {/* Grid Lines */}
-                      <line x1="0" y1="40" x2="600" y2="40" stroke="#f1f5f9" strokeWidth="1" />
-                      <line x1="0" y1="90" x2="600" y2="90" stroke="#f1f5f9" strokeWidth="1" />
-                      <line x1="0" y1="140" x2="600" y2="140" stroke="#f1f5f9" strokeWidth="1" />
-
-                      {/* Area Fill */}
-                      <polygon
-                        points="0,170 50,140 100,150 150,110 200,125 250,90 300,105 350,60 400,75 450,45 500,60 550,25 600,40 600,190 0,190"
-                        fill="url(#salesGrad)"
-                      />
-
-                      {/* Line */}
-                      <polyline
-                        points="0,170 50,140 100,150 150,110 200,125 250,90 300,105 350,60 400,75 450,45 500,60 550,25 600,40"
-                        fill="none"
-                        stroke="#0d9488"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-
-                      {/* Hover Data Points */}
-                      <circle cx="250" cy="90" r="4" fill="#0f766e" stroke="#fff" strokeWidth="2" />
-                      <circle cx="350" cy="60" r="4" fill="#0f766e" stroke="#fff" strokeWidth="2" />
-                      <circle cx="550" cy="25" r="5" fill="#0f766e" stroke="#fff" strokeWidth="2" />
-                    </svg>
-
-                    <div className="flex justify-between text-[11px] text-slate-400 font-mono pt-2">
-                      <span>Oct 01</span>
-                      <span>Oct 05</span>
-                      <span>Oct 10</span>
-                      <span>Oct 15</span>
-                      <span>Oct 18 (Today)</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Order Status Distribution */}
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs space-y-4">
-                  <h3 className="font-bold text-sm text-slate-900">Order Fulfillment Distribution</h3>
-
-                  <div className="space-y-3 text-xs">
-                    <div>
-                      <div className="flex justify-between font-semibold mb-1">
-                        <span className="text-slate-700">Delivered & Completed (78%)</span>
-                        <span className="font-mono text-slate-900">115 orders</span>
-                      </div>
-                      <div className="w-full bg-slate-100 rounded-full h-2">
-                        <div className="bg-emerald-500 h-2 rounded-full" style={{ width: '78%' }}></div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between font-semibold mb-1">
-                        <span className="text-slate-700">Processing & Packing (14%)</span>
-                        <span className="font-mono text-slate-900">21 orders</span>
-                      </div>
-                      <div className="w-full bg-slate-100 rounded-full h-2">
-                        <div className="bg-blue-500 h-2 rounded-full" style={{ width: '14%' }}></div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between font-semibold mb-1">
-                        <span className="text-slate-700">Awaiting Payment (8%)</span>
-                        <span className="font-mono text-slate-900">12 orders</span>
-                      </div>
-                      <div className="w-full bg-slate-100 rounded-full h-2">
-                        <div className="bg-amber-500 h-2 rounded-full" style={{ width: '8%' }}></div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* AI Insights Card */}
-                  <div className="p-3.5 bg-purple-50 border border-purple-200 rounded-xl space-y-1.5 text-xs text-purple-900">
-                    <div className="flex items-center gap-1.5 font-bold">
-                      <Sparkles className="w-4 h-4 text-purple-600" />
-                      <span>AI Business Recommendation</span>
-                    </div>
-                    <p className="text-[11px] leading-relaxed text-purple-800">
-                      Reorder 15 units of <strong>BNIE-RIBBED-01</strong> to avoid weekend stockouts. Customers adding Daypack BP-003 show a 68% cross-sell affinity for the watch cap.
-                    </p>
-                  </div>
-                </div>
+                  {outOfStockItems.length === 0 && lowStockItems.length === 0 && (
+                    <p className="mt-4 text-xs text-slate-600">No stock alerts right now.</p>
+                  )}
+                </section>
               </div>
 
-              {/* Live Orders Stream & Invariants Card */}
+              {/* Recent activity and follow-up */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div>
-                      <h3 className="font-bold text-sm text-slate-900">Recent Authoritative Orders</h3>
-                      <p className="text-xs text-slate-500">Live order state machine transitions</p>
+                      <h3 className="font-bold text-sm text-slate-900">Recent orders</h3>
+                      <p className="text-xs text-slate-500">Orders created in the selected period</p>
                     </div>
                     <button
+                      type="button"
                       onClick={() => setActiveMenu('orders')}
-                      className="text-xs font-semibold text-slate-800 hover:text-slate-900 flex items-center gap-1"
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-950"
                     >
                       <span>View All Orders</span>
                       <ArrowRight className="w-3.5 h-3.5" />
@@ -947,22 +946,22 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                   </div>
 
                   <div className="divide-y divide-slate-100 text-xs">
-                    {orders.slice(0, 5).map((ord) => (
-                      <div key={ord.id} className="p-4 hover:bg-slate-50/60 transition-colors flex items-center justify-between">
-                        <div>
+                    {periodOrders.slice(0, 5).map((ord) => (
+                      <div key={ord.id} className="flex flex-col gap-3 p-4 transition-colors hover:bg-slate-50/60 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="font-mono font-bold text-slate-900">{ord.id}</span>
                             <span className="text-slate-300">·</span>
-                            <span className="font-medium text-slate-700">{ord.customerName}</span>
+                            <span className="truncate font-medium text-slate-700">{ord.customerName}</span>
                             <span className="text-slate-300">·</span>
                             <span className="text-slate-400 font-mono">{ord.items.length} items</span>
                           </div>
-                          <div className="text-slate-500 text-[11px] mt-0.5">
+                          <div className="mt-0.5 truncate text-[11px] text-slate-500">
                             {ord.items.map((i) => i.title).join(', ')}
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-4">
+                        <div className="flex shrink-0 items-center gap-3 sm:gap-4">
                           <span className="font-mono font-bold text-slate-900">
                             {formatCurrency(ord.totalCents, ord.currency)}
                           </span>
@@ -980,65 +979,73 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                         </div>
                       </div>
                     ))}
+                    {periodOrders.length === 0 && (
+                      <div className="p-6 text-center">
+                        <p className="text-sm font-semibold text-slate-800">No orders in this date range</p>
+                        <p className="mt-1 text-xs text-slate-500">Try a longer range or check back when new orders arrive.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* Invariants & Low Stock alerts */}
                 <div className="space-y-4">
-                  <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-3 text-xs shadow-2xs">
-                    <div className="flex items-center gap-2 font-bold text-sm">
-                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                      <span>System Invariants Active</span>
-                    </div>
-                    <ul className="space-y-2 text-slate-300 text-[11px]">
-                      <li className="flex items-start gap-2">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                        <span><strong>Atomic Locks:</strong> Eliminates overselling under concurrency.</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                        <span><strong>Payment Verification:</strong> Prepaid orders require charge token.</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                        <span><strong>Role Boundaries:</strong> Customers isolated to public catalog.</span>
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="bg-white border border-slate-200 p-5 rounded-2xl space-y-3 text-xs shadow-2xs">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                        <AlertCircle className="w-4 h-4 text-amber-500" />
-                        <span>Reorder Alerts</span>
+                      <span className="flex items-center gap-1.5 text-sm font-bold text-slate-900">
+                        <AlertCircle className="h-4 w-4 text-amber-600" />
+                        <span>Stock alerts</span>
                       </span>
-                      <span className="text-[11px] font-mono text-slate-400">Threshold &le; 5</span>
+                      <span className="font-mono text-xs text-slate-500">{lowStockItems.length + outOfStockItems.length}</span>
                     </div>
 
-                    <div className="space-y-2">
-                      {lowStockItems.map((inv) => (
+                    <div className="mt-3 space-y-2">
+                      {[...outOfStockItems, ...lowStockItems].slice(0, 5).map((inv) => (
                         <div
                           key={`${inv.sku}-${inv.warehouseId}`}
-                          className="p-2.5 bg-amber-50/60 border border-amber-200/60 rounded-xl flex items-center justify-between"
+                          className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5"
                         >
-                          <div>
+                          <div className="min-w-0">
                             <div className="font-mono font-bold text-slate-900">{inv.sku}</div>
-                            <div className="text-[10px] text-slate-500">{inv.warehouseName}</div>
+                            <div className="truncate text-[10px] text-slate-500">{inv.warehouseName}</div>
                           </div>
-                          <span className="font-mono font-bold text-amber-800">
-                            {inv.physicalStock - inv.reservedStock} left
+                          <span className="shrink-0 font-mono text-xs font-bold text-slate-700">
+                            {Math.max(0, inv.physicalStock - inv.reservedStock - inv.quarantineStock)} available
                           </span>
                         </div>
                       ))}
+                      {lowStockItems.length + outOfStockItems.length === 0 && (
+                        <p className="rounded-xl bg-emerald-50 p-3 text-xs text-emerald-900">
+                          No low-stock or out-of-stock items.
+                        </p>
+                      )}
                     </div>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveMenu('team')}
+                    className="w-full rounded-xl border border-slate-200 bg-white p-4 text-left shadow-2xs transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    <span className="block text-sm font-semibold text-slate-900">Manage team access</span>
+                    <span className="mt-1 block text-xs text-slate-600">
+                      Review staff roles, customer accounts, and permissions.
+                    </span>
+                  </button>
                 </div>
               </div>
 
-              {/* ========================================================= */}
-              {/* ADMIN DASHBOARD: CUSTOMER ROLE PROMOTION & STAFF DELEGATION */}
-              {/* ========================================================= */}
-              <div id="admin-promotion-center" className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs space-y-4 scroll-mt-6">
+              {!showDashboardRoleTools && (
+                <button
+                  type="button"
+                  onClick={() => setShowDashboardRoleTools(true)}
+                  aria-expanded={false}
+                  className="text-xs font-medium text-slate-600 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
+                >
+                  Open quick role management
+                </button>
+              )}
+              {showDashboardRoleTools && (
+              <div id="admin-promotion-center" className="scroll-mt-6 space-y-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xs">
                 <div className="p-5 border-b border-slate-200 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                   <div className="space-y-1">
                     <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-500/30 text-indigo-200 text-[11px] font-bold">
@@ -1055,6 +1062,15 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
                   <div className="flex items-center gap-2">
                     <button
+                      type="button"
+                      onClick={() => setShowDashboardRoleTools(false)}
+                      aria-expanded={true}
+                      className="px-3.5 py-1.5 rounded-xl border border-slate-600 text-xs font-semibold text-slate-100 transition hover:bg-slate-800"
+                    >
+                      Hide quick tools
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setActiveMenu('team')}
                       className="px-3.5 py-1.5 bg-white text-slate-900 hover:bg-slate-100 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 shrink-0"
                     >
@@ -1286,6 +1302,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                   </table>
                 </div>
               </div>
+              )}
             </div>
           )}
 
@@ -1293,7 +1310,27 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {activeMenu === 'orders' && renderOrderStateMachine()}
 
           {/* SECTION: PRODUCTS OR INVENTORY */}
-          {(activeMenu === 'products' || activeMenu === 'inventory') && renderInventoryCatalog()}
+          {(activeMenu === 'products' || activeMenu === 'inventory') && (
+            <div className="space-y-4">
+              {activeMenu === 'inventory' && (
+                <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-900">Inventory maintenance</h2>
+                    <p className="mt-1 text-xs text-slate-600">Release reservations whose hold period has expired.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onSweepExpired}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Clean expired holds
+                  </button>
+                </div>
+              )}
+              {renderInventoryCatalog()}
+            </div>
+          )}
 
           {/* SECTION: CUSTOMERS */}
           {activeMenu === 'customers' && (
@@ -1569,26 +1606,30 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {/* SECTION: ANALYTICS & REPORTS */}
           {activeMenu === 'analytics' && (
             <div className="space-y-6">
-              <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs space-y-4">
-                <h3 className="text-base font-bold text-slate-900">Kenya Regional Sales & Corridor Analytics</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl space-y-1">
-                    <span className="text-xs text-slate-500 font-medium">Nairobi & Kiambu Metropolitan</span>
-                    <div className="text-xl font-bold font-mono text-slate-900">KSh 1,480,500.00</div>
-                    <div className="text-[11px] text-emerald-600 font-semibold">64% of volume (Boda Same-Day)</div>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-xl space-y-1">
-                    <span className="text-xs text-slate-500 font-medium">Coast & Mombasa Region</span>
-                    <div className="text-xl font-bold font-mono text-slate-900">KSh 578,200.00</div>
-                    <div className="text-[11px] text-emerald-600 font-semibold">25% of volume (Nyali Hub)</div>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-xl space-y-1">
-                    <span className="text-xs text-slate-500 font-medium">Rift Valley & Western Kenya</span>
-                    <div className="text-xl font-bold font-mono text-slate-900">KSh 254,400.00</div>
-                    <div className="text-[11px] text-emerald-600 font-semibold">11% of volume (Fargo/G4S 24h)</div>
-                  </div>
+              <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs" aria-labelledby="channel-performance-heading">
+                <div>
+                  <h2 id="channel-performance-heading" className="text-base font-bold text-slate-900">Sales by channel</h2>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Paid sales and order counts recorded during {dateRange === 'today' ? 'today' : `the last ${dateRange}`}.
+                  </p>
                 </div>
-              </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {channelSummaries.map((summary) => (
+                    <div key={summary.channel} className="rounded-xl bg-slate-50 p-4">
+                      <h3 className="text-xs font-semibold text-slate-700">{channelLabels[summary.channel]}</h3>
+                      <p className="mt-2 font-mono text-lg font-bold text-slate-900">
+                        {formatCurrency(summary.paidSalesCents, tenant.currency)}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600">{summary.orderCount} orders</p>
+                    </div>
+                  ))}
+                </div>
+                {periodOrders.every((order) => !order.sourceChannel) && (
+                  <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
+                    Channel totals are unavailable because these orders do not include channel attribution.
+                  </p>
+                )}
+              </section>
             </div>
           )}
 
@@ -1596,6 +1637,9 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {(activeMenu === 'integrations' || activeMenu === 'automation') && (
             <div className="space-y-6">
               <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs space-y-4">
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                  Demo environment: connector statuses and controls are local previews, not live service connections.
+                </p>
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                   <div>
                     <div className="flex items-center gap-2">
@@ -1624,7 +1668,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                       }`}
                     >
                       <Layers className="w-3.5 h-3.5 text-blue-600" />
-                      <span>Commercial Connectors (6)</span>
+                      <span>Commercial Connectors ({integrations.length})</span>
                     </button>
 
                     <button
@@ -1661,7 +1705,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                   : 'bg-slate-100 text-slate-500'
                               }`}
                             >
-                              {item.status}
+                              {isConnected ? 'Demo connected' : 'Not connected'}
                             </span>
                           </div>
                           <h4 className="font-bold text-sm text-slate-900">{item.name}</h4>
@@ -1669,10 +1713,13 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                         </div>
 
                         <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
-                          <div className="text-[11px] text-slate-500 font-mono">{item.details}</div>
+                          <div className="text-[11px] text-slate-600">
+                            Sample connector configuration. No external service is connected.
+                          </div>
                           <div className="flex items-center justify-between pt-1">
-                            <span className="text-[11px] text-slate-400">Sync: {item.lastSyncAt}</span>
+                            <span className="text-[11px] text-slate-500">Live sync unavailable</span>
                             <button
+                              type="button"
                               onClick={() => handleToggleIntegration(item.id)}
                               className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
                                 isConnected
@@ -1680,7 +1727,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                   : 'bg-slate-900 text-white hover:bg-slate-800'
                               }`}
                             >
-                              {isConnected ? 'Disconnect' : 'Connect'}
+                              {isConnected ? 'Simulate disconnect' : 'Simulate connect'}
                             </button>
                           </div>
                         </div>

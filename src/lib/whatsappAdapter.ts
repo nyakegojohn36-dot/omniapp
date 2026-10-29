@@ -1,5 +1,5 @@
 /**
- * Meta WhatsApp Cloud API Adapter for OmniCommerce AI
+ * Meta WhatsApp Cloud API Adapter for SokoFlow
  * Handles webhook handshakes, payload extraction, message normalization,
  * and routing into the grounded customer assistant.
  */

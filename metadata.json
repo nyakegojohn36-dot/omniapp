@@ -1,6 +1,6 @@
 {
-  "name": "OmniCommerce AI - Global Ecommerce Automation Platform",
-  "description": "Multi-tenant ecommerce operations platform with atomic inventory control, order state machine, AI customer service, and global provider adapters.",
+  "name": "SokoFlow",
+  "description": "Run your business from one place. SokoFlow helps growing retailers manage orders, inventory, customer conversations, and fulfilment across sales channels—with AI-assisted support to help teams serve customers faster.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

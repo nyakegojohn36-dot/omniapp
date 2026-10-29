@@ -219,14 +219,14 @@ export const LoginView: React.FC<LoginViewProps> = ({
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-base shadow-xs">
-              OC
+              SF
             </div>
             <div>
               <div className="text-base font-bold tracking-tight text-slate-900 leading-tight">
-                OmniCommerce AI
+                SokoFlow
               </div>
               <div className="text-[11px] text-slate-500 font-medium">
-                Enterprise Multi-Tenant Ecommerce Automation
+                Every order. Every channel. One clear view.
               </div>
             </div>
           </div>
@@ -245,6 +245,11 @@ export const LoginView: React.FC<LoginViewProps> = ({
               ? 'All new users register strictly as Customers. Only the Business Owner (Admin) can promote accounts to Fulfillment Staff, Support Staff, or Admin.'
               : 'Log in with your registered account. You will access only the dashboards authorized for your role.'}
           </p>
+          {pageMode === 'signin' && (
+            <p className="mt-3 max-w-2xl mx-auto text-sm leading-relaxed text-slate-700">
+              Run your business from one place. SokoFlow brings orders, inventory, customer conversations, and fulfilment together—with AI-assisted support to help your team serve customers faster.
+            </p>
+          )}
 
           {/* Dedicated Page Toggle Tabs */}
           <div className="mt-6 inline-flex p-1 bg-slate-200 rounded-xl shadow-inner">
@@ -556,7 +561,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
       {/* Footer */}
       <footer className="border-t border-slate-200 bg-white py-4 px-4 sm:px-6 text-xs text-slate-500">
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>Safari Peak Outfitters Kenya &copy; 2026 · Powered by OmniCommerce Retail OS</span>
+          <span>&copy; 2026 SokoFlow · Every order. Every channel. One clear view.</span>
           <div className="flex items-center gap-3">
             <span>KRA eTIMS Tax Compliant</span>
             <span aria-hidden="true">·</span>

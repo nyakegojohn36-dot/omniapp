@@ -57,7 +57,7 @@ export function EmbeddedWhatsAppWidget({
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const cleanPhone = displayPhoneNumber.replace(/\D/g, '');
   const directWhatsAppUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(
-    'Hi OmniCommerce AI! I am interested in ordering from your store.'
+    'Hi! I am interested in ordering from your store.'
   )}`;
 
   useEffect(() => {

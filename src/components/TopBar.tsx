@@ -93,11 +93,11 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Zone 1: Brand wordmark & Active Store context */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center font-bold text-sm tracking-tight shadow-xs">
-            OC
+            SF
           </div>
           <div className="flex flex-col">
             <span className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap leading-none">
-              OmniCommerce AI
+              SokoFlow
             </span>
             <span className="text-[10px] text-slate-500 font-medium tracking-tight mt-0.5 flex items-center gap-1">
               <span>{currentTenant.name}</span>
@@ -113,6 +113,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('storefront') && (
             <button
               onClick={() => onSelectTab('storefront')}
+              aria-current={activeTab === 'storefront' ? 'page' : undefined}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
                 activeTab === 'storefront'
                   ? 'text-slate-900 font-semibold border-b-2 border-slate-900'
@@ -128,7 +129,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
 
           {/* Overview Tab label tailored by Role */}
-          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('overview') && (
+          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('overview') && currentRole !== 'BUSINESS_OWNER' && (
             <button
               onClick={() => onSelectTab('overview')}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
@@ -144,7 +145,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
 
           {/* Customer Support Desk Tab */}
-          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('support') && (
+          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('support') && currentRole !== 'BUSINESS_OWNER' && (
             <button
               onClick={() => onSelectTab('support')}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
@@ -158,7 +159,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
 
           {/* Inventory tab - accessible only to roles permitted */}
-          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('inventory') && currentRole !== 'CUSTOMER' && (
+          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('inventory') && currentRole !== 'CUSTOMER' && currentRole !== 'BUSINESS_OWNER' && (
             <button
               onClick={() => onSelectTab('inventory')}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
@@ -172,7 +173,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
 
           {/* Orders state machine tab */}
-          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('orders') && (
+          {ROLE_PERMISSIONS[currentRole].allowedTabs.includes('orders') && currentRole !== 'BUSINESS_OWNER' && (
             <button
               onClick={() => onSelectTab('orders')}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
@@ -188,7 +189,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           {/* Unified AI & WhatsApp Sales */}
           {(ROLE_PERMISSIONS[currentRole].allowedTabs.includes('ai-sales') ||
             ROLE_PERMISSIONS[currentRole].allowedTabs.includes('ai-assistant') ||
-            ROLE_PERMISSIONS[currentRole].allowedTabs.includes('whatsapp')) && (
+            ROLE_PERMISSIONS[currentRole].allowedTabs.includes('whatsapp')) && currentRole !== 'BUSINESS_OWNER' && (
             <button
               onClick={() => onSelectTab('ai-sales')}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
@@ -329,6 +330,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Mobile Nav Tabs Bar (Filtered strictly by Role) */}
       <div className="md:hidden flex items-center gap-1 overflow-x-auto px-4 py-2 border-t border-slate-100 bg-slate-50/50 text-xs">
         {ROLE_PERMISSIONS[currentRole].allowedTabs.map((tabId: TabId) => {
+          if (currentRole === 'BUSINESS_OWNER' && tabId !== 'storefront') return null;
           if (currentRole === 'CUSTOMER' && tabId === 'inventory') return null;
           // Avoid duplicate mobile tabs for combined sales channels and technical developer webhooks
           if (tabId === 'ai-assistant' || tabId === 'whatsapp' || tabId === 'automation') return null;
@@ -355,6 +357,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <button
               key={tabId}
               onClick={() => onSelectTab(tabId)}
+              aria-current={activeTab === tabId ? 'page' : undefined}
               className={`px-3 py-1.5 rounded-md whitespace-nowrap font-medium transition-colors ${
                 isActive
                   ? 'bg-white text-slate-900 shadow-xs font-semibold'

@@ -329,7 +329,7 @@ app.get('/privacy', (_req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Privacy Policy - OmniCommerce AI</title>
+  <title>Privacy Policy - SokoFlow</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 780px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #1e293b; background: #f8fafc; }
     .card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 36px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
@@ -342,9 +342,9 @@ app.get('/privacy', (_req: Request, res: Response) => {
 <body>
   <div class="card">
     <span class="badge">Official Policy</span>
-    <h1>Privacy Policy - OmniCommerce AI</h1>
+    <h1>Privacy Policy - SokoFlow</h1>
     <p><em>Last updated: October 2026</em></p>
-    <p>OmniCommerce AI ("we", "our", or "us") operates the OmniCommerce ecommerce automation platform, including automated conversational commerce via Meta WhatsApp Business Cloud API.</p>
+    <p>SokoFlow ("we", "our", or "us") operates a commerce operations platform, including automated conversational commerce via Meta WhatsApp Business Cloud API.</p>
     <h2>1. Information We Collect</h2>
     <p>When you interact with our WhatsApp messaging bot or storefront, we collect and process your WhatsApp phone number, display profile name, and incoming message text strictly to fulfill your inquiries, check inventory, and manage order deliveries.</p>
     <h2>2. Purpose of Processing</h2>
@@ -368,7 +368,7 @@ app.get('/terms', (_req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Terms of Service - OmniCommerce AI</title>
+  <title>Terms of Service - SokoFlow</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 780px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #1e293b; background: #f8fafc; }
     .card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 36px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
@@ -378,9 +378,9 @@ app.get('/terms', (_req: Request, res: Response) => {
 </head>
 <body>
   <div class="card">
-    <h1>Terms of Service - OmniCommerce AI</h1>
+    <h1>Terms of Service - SokoFlow</h1>
     <p><em>Last updated: October 2026</em></p>
-    <p>By using the OmniCommerce AI platform and its WhatsApp Business automation service, you agree to receive automated transactional updates for your ecommerce purchases and inquiries.</p>
+    <p>By using the SokoFlow platform and its WhatsApp Business automation service, you agree to receive automated transactional updates for your ecommerce purchases and inquiries.</p>
     <p>For inquiries, contact: <strong>nyakegojohn36@gmail.com</strong>.</p>
   </div>
 </body>
@@ -409,14 +409,14 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[OmniCommerce Server] Running on http://0.0.0.0:${PORT}`);
+    console.log(`[SokoFlow] Running on http://0.0.0.0:${PORT}`);
   });
 }
 
 function handleShutdown(signal: string) {
-  console.log(`[OmniCommerce Server] Received ${signal}, closing gracefully...`);
+  console.log(`[SokoFlow] Received ${signal}, closing gracefully...`);
   httpServer.close(() => {
-    console.log('[OmniCommerce Server] HTTP server closed.');
+    console.log('[SokoFlow] HTTP server closed.');
     process.exit(0);
   });
 }
@@ -425,6 +425,6 @@ process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 startServer().catch((err) => {
-  console.error('[OmniCommerce Server] Startup error:', err);
+  console.error('[SokoFlow] Startup error:', err);
   process.exit(1);
 });

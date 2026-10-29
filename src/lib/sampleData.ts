@@ -1,5 +1,5 @@
 /**
- * Sample Seed Data for OmniCommerce AI
+ * Sample Seed Data for SokoFlow
  * Preserves project history (TSHIRT001, ORD-000008) and provides multi-tenant catalogs.
  */
 
@@ -900,4 +900,3 @@ export const SEED_STAFF_MEMBERS: StaffMember[] = [
     lastActive: '30 mins ago',
   },
 ];
-

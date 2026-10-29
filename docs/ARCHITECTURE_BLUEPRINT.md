@@ -1,11 +1,11 @@
-# OmniCommerce AI - Global Ecommerce Automation Platform
+# SokoFlow - Ecommerce Operations Platform
 ## Comprehensive Project Audit & Implementation Blueprint
 
 ---
 
 ### 1. Product Overview
 
-**OmniCommerce AI** is a commercial, multi-tenant Software-as-a-Service (SaaS) operations platform engineered to automate ecommerce operations globally. It combines:
+**SokoFlow** is a multi-tenant commerce operations platform that helps growing retailers coordinate orders, inventory, customer conversations, and fulfilment across sales channels. It combines:
 - **Authoritative Business Logic Engines**: Deterministic order state machines, atomic inventory reservations with concurrency protection, precision-safe financial calculations, and idempotency protection.
 - **AI-Assisted Customer & Sales Intelligence**: Grounded in live transactional state using Google Gemini (`gemini-3.8-flash`) with server-side function calling, enforcing strict out-of-stock rules without hallucinating facts.
 - **Global Integration Framework**: Modular adapters for payment providers (Stripe, PayPal, COD), shipping carriers (DHL, FedEx, local couriers), and workflow orchestrators (n8n webhooks).
@@ -15,7 +15,7 @@
 
 ### 2. Key Business Problems & Measurable Objectives
 
-| Problem | Root Cause in Legacy / Manual Setups | OmniCommerce AI Solution | Measurable Metric / KPI |
+| Problem | Root Cause in Legacy / Manual Setups | SokoFlow Solution | Measurable Metric / KPI |
 | :--- | :--- | :--- | :--- |
 | **Overselling & Out-of-Stock Discrepancies** | Non-atomic read-then-write stock checks in spreadsheets or disconnected tools | Concurrency-safe atomic reservations with automatic Time-to-Live (TTL) expiration | **Zero** oversold orders; <0.01% inventory variance |
 | **Slow Customer Inquiries & Lost Sales** | Manual triage of availability, sizing, and shipping queries | Real-time AI sales assistant with live inventory tool calling | **<3 second** first response time; >70% autonomous resolution rate |
@@ -327,7 +327,7 @@ CREATE TABLE idempotency_records (
 2. **n8n Workflow Responsibilities (Orchestration & External Notification)**:
    - **Order Received Flow**: Listens to `order.confirmed` webhook -> Formats packing slip -> Sends Telegram/WhatsApp alert to fulfillment team.
    - **Low-Stock Alert Flow**: Polled every 30 minutes -> Detects items where `availableStock <= lowStockThreshold` -> Generates vendor reorder draft in Google Sheets / ERP.
-   - **Carrier Sync Flow**: Ingests DHL/FedEx status webhook -> Calls OmniCommerce `POST /api/orders/transition` to advance to `SHIPPED` or `DELIVERED`.
+   - **Carrier Sync Flow**: Ingests DHL/FedEx status webhook -> Calls the SokoFlow `POST /api/orders/transition` endpoint to advance to `SHIPPED` or `DELIVERED`.
 
 ---
 

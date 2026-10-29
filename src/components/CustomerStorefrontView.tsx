@@ -1544,7 +1544,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
             <div className="p-3.5 bg-slate-900 text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Bot className="w-4 h-4 text-amber-400" />
-                <span className="font-bold text-xs">OmniCommerce Shopping Concierge</span>
+                <span className="font-bold text-xs">SokoFlow Shopping Assistant</span>
               </div>
               <button
                 onClick={() => setIsAiConciergeOpen(false)}

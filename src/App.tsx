@@ -36,6 +36,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('storefront');
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [isConcurrencyModalOpen, setIsConcurrencyModalOpen] = useState<boolean>(false);
+  const [orderSyncStatus, setOrderSyncStatus] = useState<'loading' | 'connected' | 'error'>('loading');
 
   // Core State Stores
   const inventoryEngine = useMemo(() => new InventoryStore(SEED_INVENTORIES), []);
@@ -65,15 +66,27 @@ export default function App() {
 
   // Synchronize orders across WhatsApp webhooks and system UI in real time
   useEffect(() => {
-    const fetchSyncedOrders = () => {
-      fetch('/api/orders')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data?.orders && Array.isArray(data.orders) && data.orders.length > 0) {
-            setOrders(data.orders);
-          }
-        })
-        .catch(() => {});
+    let hasLoggedSyncError = false;
+    const fetchSyncedOrders = async () => {
+      try {
+        const response = await fetch('/api/orders');
+        if (!response.ok) {
+          throw new Error(`Order sync failed with HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (!Array.isArray(data?.orders)) {
+          throw new Error('Order sync returned an invalid response.');
+        }
+        setOrders(data.orders);
+        setOrderSyncStatus('connected');
+        hasLoggedSyncError = false;
+      } catch (error) {
+        setOrderSyncStatus('error');
+        if (!hasLoggedSyncError) {
+          console.error('Order synchronization failed:', error);
+          hasLoggedSyncError = true;
+        }
+      }
     };
 
     fetchSyncedOrders();
@@ -357,6 +370,7 @@ export default function App() {
                   inventories={inventories}
                   activeReservationsCount={reservations.filter((r) => r.status === 'ACTIVE').length}
                   currentUser={currentUser}
+                  orderSyncStatus={orderSyncStatus}
                   users={dynamicUsers}
                   onUpdateUserRole={handleUpdateUserRole}
                   onSwitchUser={handleLogin}
@@ -516,7 +530,7 @@ export default function App() {
       {/* Quiet Footer */}
       <footer className="border-t border-slate-200 bg-white py-4 px-4 sm:px-6 lg:px-8 text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>Safari Peak Outfitters Kenya &copy; 2026 · Powered by OmniCommerce Retail OS</span>
+          <span>&copy; 2026 SokoFlow · Every order. Every channel. One clear view.</span>
           <div className="flex items-center gap-3">
             <span>KRA eTIMS Tax Compliant (16% VAT)</span>
             <span aria-hidden="true">·</span>

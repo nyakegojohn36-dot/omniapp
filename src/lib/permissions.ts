@@ -1,5 +1,5 @@
 /**
- * Role-Based Access Control (RBAC) & View Permissions for OmniCommerce AI
+ * Role-Based Access Control (RBAC) & View Permissions for SokoFlow
  * Enforces strict boundary segregation between Customer, Staff, and Business Owner.
  */
 
