@@ -1010,6 +1010,7 @@ export class WhatsAppCloudService {
     try {
       if (!this.accessTokenSecret) {
         const errMsg = 'No Meta Access Token configured. In META_TEST or LIVE_PRODUCTION, inject WHATSAPP_ACCESS_TOKEN or set in Settings.';
+        console.warn('[Meta API] Outbound reply not sent: access token is not configured.');
         if (record) {
           record.status = 'FAILED';
           record.errorMessage = errMsg;
@@ -1038,6 +1039,7 @@ export class WhatsAppCloudService {
       const resData = await res.json().catch(() => ({}));
 
       if (res.ok) {
+        console.info(`[Meta API] Outbound message accepted by Meta (HTTP ${res.status}).`);
         this.config.messageDeliveryActive = true;
         if (record) {
           record.status = 'SENT';
@@ -1076,6 +1078,9 @@ export class WhatsAppCloudService {
           record.status = 'FAILED';
           record.errorMessage = errorMsg;
         }
+        console.warn(
+          `[Meta API] Outbound message rejected (HTTP ${res.status}, code ${code || 'unknown'}).`
+        );
         this.webhookLogs.push({
           id: `log-${Date.now()}`,
           timestamp: new Date().toISOString(),
@@ -1089,6 +1094,7 @@ export class WhatsAppCloudService {
       }
     } catch (err: any) {
       const errorMsg = err?.message || 'Network error reaching Meta Graph API';
+      console.error('[Meta API] Outbound request failed before receiving a response.');
       if (record) {
         record.status = 'FAILED';
         record.errorMessage = errorMsg;

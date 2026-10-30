@@ -105,6 +105,7 @@ app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
 
 // 2. Meta WhatsApp Inbound Webhook Event Receiver (POST)
 const handleInboundWebhook = (req: Request, res: Response) => {
+  console.info('[Meta Webhook] POST received.');
   try {
     // Verify HMAC-SHA256 signatures for every webhook mode.
     const sigHeader = req.headers['x-hub-signature-256'] as string | undefined;
@@ -131,11 +132,13 @@ const handleInboundWebhook = (req: Request, res: Response) => {
           whatsappService.updateMessageStatus(wamid, status, errorDetail);
         }
       }
+      console.info(`[Meta Webhook] Acknowledged ${statuses.length} message status update(s).`);
       return res.status(200).json({ status: 'STATUSES_ACKNOWLEDGED', count: statuses.length });
     }
 
     if (!message) {
       // Return 200 to acknowledge Meta webhook test ping
+      console.info('[Meta Webhook] Signed event contained no message or status update.');
       return res.status(200).json({ status: 'IGNORED_NO_MESSAGE' });
     }
 
@@ -158,6 +161,7 @@ const handleInboundWebhook = (req: Request, res: Response) => {
       },
     });
 
+    console.info('[Meta Webhook] Inbound message processed.');
     return res.status(200).json({
       status: 'PROCESSED',
       reply: result.responseText,
@@ -175,7 +179,20 @@ app.post('/api/whatsapp/webhook', handleInboundWebhook);
 app.post('/api/webhooks/whatsapp', handleInboundWebhook);
 
 app.get('/health', (_req: Request, res: Response) => {
-  res.status(200).json({ status: 'ok' });
+  const config = whatsappService.getConfig();
+  res.status(200).json({
+    status: 'ok',
+    whatsapp: {
+      mode: config.mode,
+      verifyTokenConfigured: Boolean(process.env.WHATSAPP_VERIFY_TOKEN),
+      appSecretConfigured: Boolean(config.hasAppSecret),
+      accessTokenConfigured: Boolean(config.hasAccessToken),
+      phoneNumberIdConfigured: Boolean(config.phoneNumberId),
+      replyConfigurationComplete: config.mode !== 'SIMULATED_DEMO' &&
+        Boolean(config.hasAccessToken) &&
+        Boolean(config.phoneNumberId),
+    },
+  });
 });
 
 // 3. Configuration Management API (GET & POST)

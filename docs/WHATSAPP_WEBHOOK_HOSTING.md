@@ -23,7 +23,7 @@ The AI Studio deployment serves the SokoFlow frontend. Meta webhooks need a publ
    Store the access token, App Secret, and verification token in Secret Manager and attach them as Cloud Run secrets when possible. Never commit secrets or paste them into chat. Rotate any credentials that have previously been shared.
 
 6. Deploy the service and wait until the revision is ready. Cloud Run provides a service URL such as `https://sokoflow-whatsapp-<suffix>-<region>.a.run.app`.
-7. Check `https://<cloud-run-service-url>/health` returns `{"status":"ok"}`.
+7. Check `https://<cloud-run-service-url>/health` returns `{"status":"ok"}` and inspect the secret-safe `whatsapp` flags. For inbound verification, `appSecretConfigured` must be `true`; for automated replies, `replyConfigurationComplete` must be `true`.
 8. In Meta's **WhatsApp > Configuration > Webhooks** settings, enter:
    - **Callback URL:** `https://<cloud-run-service-url>/api/whatsapp/webhook`
    - **Verify token:** the exact value configured as `WHATSAPP_VERIFY_TOKEN`
@@ -32,6 +32,7 @@ The AI Studio deployment serves the SokoFlow frontend. Meta webhooks need a publ
 ## Notes
 
 - Cloud Run injects the `PORT` environment variable; the Express server listens on it.
+- Cloud Run logs contain safe webhook receipt/signature/processing events and outbound Meta API status without message contents, phone numbers, or credentials.
 - Cloud Run can scale to zero by default, so the first webhook after an idle period may encounter a cold start. A minimum instance can reduce cold starts but may incur ongoing cost.
 - This service is configured as a webhook backend, not a fully connected owner dashboard. In production, the demo configuration/order/message APIs are blocked. The AI Studio frontend will not share this service's in-memory messages or orders; connecting the full inbox requires real authentication and persistent storage.
 - See [Cloud Run pricing](https://cloud.google.com/run/pricing) and [Cloud Run deployment from source](https://cloud.google.com/run/docs/deploying-source-code) for current billing and deployment details.
