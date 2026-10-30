@@ -141,6 +141,45 @@ test('WhatsApp Cloud Service: completes full multi-step order placement journey 
   assert.ok(ord.reservationId);
 });
 
+test('Authenticated web chat never sends Meta messages or creates WhatsApp orders', () => {
+  const service = new WhatsAppCloudService({
+    mode: 'LIVE_PRODUCTION',
+    phoneNumberId: 'test-phone-id',
+  });
+  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+  const orders = [...SEED_ORDERS];
+  const originalOrderCount = orders.length;
+  const params = {
+    fromNumber: 'web-user-123',
+    customerName: 'Test User',
+    inventoryEngine,
+    products: SEED_PRODUCTS,
+    orders,
+    tenant: SEED_TENANTS[0],
+  };
+
+  service.processWebChatMessage({
+    ...params,
+    messageId: 'web-step-1',
+    textBody: 'I want to buy 2 TSHIRT001',
+  });
+  service.processWebChatMessage({
+    ...params,
+    messageId: 'web-step-2',
+    textBody: '450 Pine Road, Portland, 97201',
+  });
+  const confirmation = service.processWebChatMessage({
+    ...params,
+    messageId: 'web-step-3',
+    textBody: 'YES',
+  });
+
+  assert.match(confirmation.responseText, /secure checkout/i);
+  assert.equal(orders.length, originalOrderCount);
+  assert.equal(service.getConfig().mode, 'LIVE_PRODUCTION');
+  assert.ok(service.getMessages().every((message) => message.sourceMode === 'SIMULATED_DEMO'));
+});
+
 test('WhatsApp Cloud Service: refuses to order out-of-stock item and suggests alternatives', () => {
   const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
   const service = new WhatsAppCloudService();

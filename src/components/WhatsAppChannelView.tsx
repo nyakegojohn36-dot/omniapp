@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { InventoryStore } from '../lib/inventoryEngine.ts';
 import { Order, Product, Tenant, WhatsAppMessageRecord } from '../lib/types.ts';
+import { apiFetch } from '../lib/firebaseClient.ts';
 
 interface WhatsAppChannelViewProps {
   tenant: Tenant;
@@ -81,7 +82,9 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
   // 1. Fetch live messages from backend server
   const fetchMessages = async () => {
     try {
-      const res = await fetch('/api/whatsapp/messages').then((r) => r.json());
+      const response = await apiFetch('/api/whatsapp/messages');
+      if (!response.ok) throw new Error(`Loading WhatsApp messages failed (HTTP ${response.status}).`);
+      const res = await response.json();
       if (res?.messages && Array.isArray(res.messages)) {
         setMessages((prev) => {
           // If message count and last message are identical, keep existing reference to prevent re-renders
@@ -95,8 +98,8 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
           return res.messages;
         });
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      console.error('Loading WhatsApp messages failed:', error);
     }
   };
 
@@ -217,7 +220,7 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
     setReplyText('');
 
     try {
-      const res = await fetch('/api/whatsapp/messages', {
+      const response = await apiFetch('/api/whatsapp/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -226,25 +229,15 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
           textBody: text,
           orderId: activeConversation.orderId,
         }),
-      }).then((r) => r.json());
+      });
+      const res = await response.json();
+      if (!response.ok) throw new Error(res?.error || `Sending WhatsApp reply failed (HTTP ${response.status}).`);
 
       if (res?.success && res.message) {
         setMessages((prev) => [...prev, res.message]);
       }
-    } catch {
-      // optimistic update
-      const newOutbound: WhatsAppMessageRecord = {
-        id: `out-${Date.now()}`,
-        direction: 'OUTBOUND',
-        fromNumber: 'WhatsApp Store Bot',
-        toNumber: activeConversation.phoneNumber,
-        customerName: activeConversation.customerName,
-        textBody: text,
-        status: 'DELIVERED',
-        sourceMode: 'DEVELOPER_SANDBOX',
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, newOutbound]);
+    } catch (error) {
+      console.error('Sending WhatsApp reply failed:', error);
     } finally {
       setIsSendingReply(false);
       setIsScrolledUp(false);
@@ -257,8 +250,6 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
   const handleSimulateInboundCustomerMessage = async (customText?: string) => {
     setIsSimulatingInbound(true);
 
-    const testCustomerName = 'Brian Ochieng';
-    const testCustomerPhone = '+254 722 819230';
     const sampleQuestions = [
       'Jambo! Do you have the Safari Trail T-Shirt in stock?',
       'Can I order 2 units of TSHIRT001 to Westlands Nairobi?',
@@ -269,45 +260,13 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
     const text = customText || sampleQuestions[Math.floor(Math.random() * sampleQuestions.length)];
 
     try {
-      const res = await fetch('/api/whatsapp/webhook', {
+      const response = await apiFetch('/api/web-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          object: 'whatsapp_business_account',
-          entry: [
-            {
-              id: '1402546412031884',
-              changes: [
-                {
-                  value: {
-                    messaging_product: 'whatsapp',
-                    metadata: {
-                      display_phone_number: '+254 752 720933',
-                      phone_number_id: 'test_id',
-                    },
-                    contacts: [
-                      {
-                        profile: { name: testCustomerName },
-                        wa_id: testCustomerPhone.replace(/\D/g, ''),
-                      },
-                    ],
-                    messages: [
-                      {
-                        from: testCustomerPhone,
-                        id: `wamid.test.${Date.now()}`,
-                        timestamp: `${Math.floor(Date.now() / 1000)}`,
-                        text: { body: text },
-                        type: 'text',
-                      },
-                    ],
-                  },
-                  field: 'messages',
-                },
-              ],
-            },
-          ],
-        }),
-      }).then((r) => r.json());
+        body: JSON.stringify({ text }),
+      });
+      const res = await response.json();
+      if (!response.ok) throw new Error(res?.error || `Test message failed (HTTP ${response.status}).`);
 
       if (res?.orderCreatedId && onOrderCreated) {
         const matchingOrder = orders.find((o) => o.id === res.orderCreatedId);
@@ -315,11 +274,11 @@ export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
       }
 
       await fetchMessages();
-      setSelectedCustomerPhone(testCustomerPhone);
+      setSelectedCustomerPhone(res.fromNumber);
       setIsScrolledUp(false);
       setTimeout(() => scrollToBottom('smooth'), 80);
-    } catch {
-      // ignore
+    } catch (error) {
+      console.error('Simulated inbound message failed:', error);
     } finally {
       setIsSimulatingInbound(false);
     }

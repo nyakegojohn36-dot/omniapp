@@ -1,8 +1,8 @@
 FROM node:22-slim AS build
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install --include=dev
+COPY package.json package-lock.json ./
+RUN npm ci --include=dev
 
 COPY . .
 RUN npm run build && npm prune --omit=dev

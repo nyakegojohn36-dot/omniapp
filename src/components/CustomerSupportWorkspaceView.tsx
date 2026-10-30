@@ -22,6 +22,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { CustomerProfile, Order, Product, SupportCase, Tenant, UserRole, WarehouseInventory } from '../lib/types.ts';
+import { apiFetch } from '../lib/firebaseClient.ts';
 import { SEED_CUSTOMER_PROFILES, SEED_SUPPORT_CASES } from '../lib/sampleData.ts';
 import { formatCurrency } from '../lib/pricingEngine.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
@@ -67,7 +68,9 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
   useEffect(() => {
     const fetchWhatsAppMessages = async () => {
       try {
-        const res = await fetch('/api/whatsapp/messages').then((r) => r.json());
+        const response = await apiFetch('/api/whatsapp/messages');
+        if (!response.ok) throw new Error(`Loading WhatsApp conversations failed (HTTP ${response.status}).`);
+        const res = await response.json();
         if (res?.messages && Array.isArray(res.messages) && res.messages.length > 0) {
           const phoneGroups = new Map<string, any[]>();
           for (const msg of res.messages) {
@@ -131,8 +134,8 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
             return updatedCases;
           });
         }
-      } catch {
-        // ignore
+      } catch (error) {
+        console.error('Loading WhatsApp conversations failed:', error);
       }
     };
 
@@ -189,7 +192,7 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
 
     if (activeCase.channel === 'WHATSAPP' || targetPhone) {
       try {
-        await fetch('/api/whatsapp/messages', {
+        const response = await apiFetch('/api/whatsapp/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -199,9 +202,12 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
             orderId: activeCase.orderId,
           }),
         });
-        setActionNotice(`✅ Support Agent reply dispatched to customer via WhatsApp (${targetPhone})!`);
-      } catch {
-        setActionNotice('Reply recorded in support ticket.');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || `Reply failed (HTTP ${response.status}).`);
+        setActionNotice(`Support Agent reply dispatched to customer via WhatsApp (${targetPhone}).`);
+      } catch (error) {
+        console.error('Sending support reply failed:', error);
+        setActionNotice(error instanceof Error ? error.message : 'Sending the WhatsApp reply failed.');
       }
     } else {
       setActionNotice('Reply dispatched to customer via registered channel.');

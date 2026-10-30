@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { onAuthStateChanged, signOut } from '@firebase/auth';
 import { TopBar } from './components/TopBar.tsx';
 import { LoginView } from './components/LoginView.tsx';
 import { OverviewDashboard } from './components/OverviewDashboard.tsx';
@@ -17,21 +18,20 @@ import { EmbeddedWhatsAppWidget } from './components/EmbeddedWhatsAppWidget.tsx'
 import { ShieldAlert } from 'lucide-react';
 import {
   SEED_INVENTORIES,
-  SEED_ORDERS,
   SEED_PRODUCTS,
   SEED_TENANTS,
-  SEED_USERS,
 } from './lib/sampleData.ts';
 import { InventoryStore } from './lib/inventoryEngine.ts';
 import { Order, Product, Tenant, UserRole, WarehouseInventory, StockReservation, User } from './lib/types.ts';
 import { isTabPermitted, getSafeDefaultTab, TabId } from './lib/permissions.ts';
-import { getDynamicUsers, updateUserRole } from './lib/userStore.ts';
+import { apiFetch, firebaseAuth } from './lib/firebaseClient.ts';
 
 export default function App() {
   const [tenants] = useState<Tenant[]>(SEED_TENANTS);
   const [currentTenant, setCurrentTenant] = useState<Tenant>(SEED_TENANTS[0]);
-  const [dynamicUsers, setDynamicUsers] = useState<User[]>(() => getDynamicUsers());
+  const [dynamicUsers, setDynamicUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [currentRole, setCurrentRole] = useState<UserRole>('CUSTOMER');
   const [activeTab, setActiveTab] = useState<string>('storefront');
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
@@ -41,7 +41,7 @@ export default function App() {
   // Core State Stores
   const inventoryEngine = useMemo(() => new InventoryStore(SEED_INVENTORIES), []);
   const [products, setProducts] = useState<Product[]>(SEED_PRODUCTS);
-  const [orders, setOrders] = useState<Order[]>(SEED_ORDERS);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [inventories, setInventories] = useState<WarehouseInventory[]>(() =>
     inventoryEngine.getAllInventories()
   );
@@ -64,12 +64,57 @@ export default function App() {
     setReservations(inventoryEngine.getAllReservations());
   };
 
+  useEffect(() => {
+    const auth = firebaseAuth;
+    if (!auth) {
+      setAuthReady(true);
+      return;
+    }
+
+    return onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) {
+        setCurrentUser(null);
+        setAuthReady(true);
+        return;
+      }
+      if (!firebaseUser.emailVerified) {
+        setCurrentUser(null);
+        setAuthReady(true);
+        return;
+      }
+
+      try {
+        const response = await apiFetch('/api/auth/me', {}, firebaseUser);
+        const data = await response.json();
+        if (!response.ok || !data?.user) {
+          throw new Error(data?.error || `Could not restore sign-in (HTTP ${response.status}).`);
+        }
+        const user = data.user as User;
+        const tenant = tenants.find((item) => item.id === user.tenantId);
+        if (tenant) setCurrentTenant(tenant);
+        setCurrentUser(user);
+        setCurrentRole(user.role);
+        setActiveTab(user.role === 'CUSTOMER' ? 'storefront' : 'overview');
+      } catch (error) {
+        console.error('Restoring Firebase sign-in failed:', error);
+        await signOut(auth);
+      } finally {
+        setAuthReady(true);
+      }
+    });
+  }, [tenants]);
+
   // Synchronize orders across WhatsApp webhooks and system UI in real time
   useEffect(() => {
+    if (!currentUser) {
+      setOrders([]);
+      setOrderSyncStatus('loading');
+      return;
+    }
     let hasLoggedSyncError = false;
     const fetchSyncedOrders = async () => {
       try {
-        const response = await fetch('/api/orders');
+        const response = await apiFetch('/api/orders');
         if (!response.ok) {
           throw new Error(`Order sync failed with HTTP ${response.status}`);
         }
@@ -92,14 +137,27 @@ export default function App() {
     fetchSyncedOrders();
     const syncInterval = setInterval(fetchSyncedOrders, 3000);
     return () => clearInterval(syncInterval);
-  }, []);
+  }, [currentUser?.id]);
 
-  const handleRoleChange = (newRole: UserRole) => {
-    setCurrentRole(newRole);
-    if (!isTabPermitted(newRole, activeTab as TabId)) {
-      setActiveTab(getSafeDefaultTab(newRole, activeTab as TabId));
+  useEffect(() => {
+    if (!currentUser || currentRole !== 'BUSINESS_OWNER') {
+      setDynamicUsers([]);
+      return;
     }
-  };
+    let active = true;
+    apiFetch('/api/users')
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok || !Array.isArray(data?.users)) {
+          throw new Error(data?.error || `Could not load team members (HTTP ${response.status}).`);
+        }
+        if (active) setDynamicUsers(data.users);
+      })
+      .catch((error) => console.error('Loading team members failed:', error));
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.id, currentRole]);
 
   const handleSelectTab = (tab: string) => {
     if (isTabPermitted(currentRole, tab as TabId)) {
@@ -112,11 +170,13 @@ export default function App() {
   const handleCustomerOrderCreated = (newOrder: Order) => {
     setOrders((prev) => [newOrder, ...prev.filter((o) => o.id !== newOrder.id)]);
     refreshInventories();
-    fetch('/api/orders', {
+    apiFetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newOrder),
-    }).catch(() => {});
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Saving the order failed (HTTP ${response.status}).`);
+    }).catch((error) => console.error('Saving the new order failed:', error));
   };
 
   // Add Product Handler (Business Owner / Store Admin only)
@@ -202,11 +262,13 @@ export default function App() {
     );
 
     // Sync order updates with backend
-    fetch(`/api/orders/${updatedOrder.id}`, {
+    apiFetch(`/api/orders/${updatedOrder.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updatedOrder),
-    }).catch(() => {});
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Updating the order failed (HTTP ${response.status}).`);
+    }).catch((error) => console.error('Updating the order failed:', error));
 
     // If order was confirmed, commit its stock reservation
     if (updatedOrder.status === 'CONFIRMED' && updatedOrder.reservationId) {
@@ -249,6 +311,8 @@ export default function App() {
   const handleLogin = (user: User) => {
     setCurrentUser(user);
     setCurrentRole(user.role);
+    const tenant = tenants.find((item) => item.id === user.tenantId);
+    if (tenant) setCurrentTenant(tenant);
     if (user.role === 'CUSTOMER') {
       setActiveTab('storefront');
     } else {
@@ -256,33 +320,36 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setAuthMode('signin');
-    setCurrentUser(null);
+    if (firebaseAuth) await signOut(firebaseAuth);
   };
 
   const handleOpenSignUp = () => {
     setAuthMode('signup');
-    setCurrentUser(null);
   };
 
-  const handleUpdateUserRole = (targetUserId: string, newRole: UserRole, reason?: string) => {
+  const handleUpdateUserRole = async (targetUserId: string, newRole: UserRole, reason?: string) => {
     if (!currentUser) return;
-    const res = updateUserRole(currentUser, targetUserId, newRole, reason);
-    if (res.success) {
-      const refreshed = getDynamicUsers();
-      setDynamicUsers(refreshed);
-      if (currentUser.id === targetUserId) {
-        setCurrentUser((prev) => (prev ? { ...prev, role: newRole } : null));
-        setCurrentRole(newRole);
-      }
+    const response = await apiFetch(`/api/users/${encodeURIComponent(targetUserId)}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: newRole, reason }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data?.user) {
+      throw new Error(data?.error || `Could not update the team member role (HTTP ${response.status}).`);
     }
+    setDynamicUsers((users) => users.map((user) => user.id === data.user.id ? data.user : user));
   };
 
-  const handleSignUpSuccess = (newUser: User) => {
-    setDynamicUsers(getDynamicUsers());
-    handleLogin(newUser);
-  };
+  if (!authReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-600">
+        Restoring secure sign-in...
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return (
@@ -291,8 +358,6 @@ export default function App() {
         currentTenant={currentTenant}
         onSelectTenant={setCurrentTenant}
         onLogin={handleLogin}
-        dynamicUsers={dynamicUsers}
-        onSignUpSuccess={handleSignUpSuccess}
         initialMode={authMode}
       />
     );
@@ -338,6 +403,8 @@ export default function App() {
                 inventories={inventories}
                 inventoryEngine={inventoryEngine}
                 existingOrdersCount={orders.length}
+                orders={orders}
+                currentUser={currentUser}
                 currentRole={currentRole}
                 onOrderCreated={handleCustomerOrderCreated}
                 onNavigateTab={handleSelectTab}
@@ -373,7 +440,6 @@ export default function App() {
                   orderSyncStatus={orderSyncStatus}
                   users={dynamicUsers}
                   onUpdateUserRole={handleUpdateUserRole}
-                  onSwitchUser={handleLogin}
                   onNavigateTab={handleSelectTab}
                   onSweepExpired={handleSweepExpired}
                   onOpenConcurrencyModal={() => setIsConcurrencyModalOpen(true)}

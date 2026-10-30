@@ -1,30 +1,28 @@
 import React, { useState } from 'react';
 import {
-  ShoppingBag,
-  Package,
-  Headphones,
-  Building2,
   ArrowRight,
-  CheckCircle2,
   AlertCircle,
   KeyRound,
   UserPlus,
   LogIn,
-  Users,
   ShieldCheck,
-  Check,
-  Sparkles,
 } from 'lucide-react';
-import type { Tenant, User, UserRole } from '../lib/types.ts';
-import { signUpCustomer, authenticateUser } from '../lib/userStore.ts';
+import type { Tenant, User } from '../lib/types.ts';
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  type User as FirebaseAuthUser,
+} from '@firebase/auth';
+import { apiFetch, firebaseAuth, isFirebaseConfigured } from '../lib/firebaseClient.ts';
 
 interface LoginViewProps {
   tenants: Tenant[];
   currentTenant: Tenant;
   onSelectTenant: (tenant: Tenant) => void;
   onLogin: (user: User) => void;
-  dynamicUsers?: User[];
-  onSignUpSuccess?: (user: User) => void;
   initialMode?: 'signin' | 'signup';
 }
 
@@ -33,12 +31,9 @@ export const LoginView: React.FC<LoginViewProps> = ({
   currentTenant,
   onSelectTenant,
   onLogin,
-  dynamicUsers = [],
-  onSignUpSuccess,
   initialMode = 'signin',
 }) => {
   const [pageMode, setPageMode] = useState<'signin' | 'signup'>(initialMode);
-  const [selectedTenantId, setSelectedTenantId] = useState(currentTenant.id);
 
   // Sign In credentials state
   const [signInEmail, setSignInEmail] = useState('');
@@ -52,38 +47,48 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [signupPassword, setSignupPassword] = useState('');
   const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
   const [signupError, setSignupError] = useState<string | null>(null);
-  const [signupSuccessNotice, setSignupSuccessNotice] = useState<string | null>(null);
+  const [signupNotice, setSignupNotice] = useState<string | null>(null);
 
-  // Direct login with pre-configured persona for fast evaluation
-  const handleDirectLogin = (user: User) => {
-    const tenant = tenants.find((t) => t.id === selectedTenantId) || currentTenant;
+  const loadProfile = async (firebaseUser: FirebaseAuthUser) => {
+    const response = await apiFetch('/api/auth/me', {}, firebaseUser);
+    const data = await response.json();
+    if (!response.ok || !data?.user) {
+      throw new Error(data?.error || 'Could not load your SokoFlow account.');
+    }
+    const user = data.user as User;
+    const tenant = tenants.find((item) => item.id === user.tenantId) || currentTenant;
     onSelectTenant(tenant);
-    onLogin({ ...user, tenantId: tenant.id });
+    onLogin(user);
+    return user;
   };
 
-  const handleCredentialsSubmit = (e: React.FormEvent) => {
+  const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSignInError(null);
+    if (!firebaseAuth) {
+      setSignInError('Firebase Authentication is not configured for this app.');
+      return;
+    }
     setIsSubmitting(true);
-
-    setTimeout(() => {
-      setIsSubmitting(false);
-      const auth = authenticateUser(signInEmail, selectedTenantId);
-
-      if (auth.success && auth.user) {
-        const tenant = tenants.find((t) => t.id === selectedTenantId) || currentTenant;
-        onSelectTenant(tenant);
-        onLogin({ ...auth.user, tenantId: tenant.id });
-      } else {
-        setSignInError(
-          auth.error ||
-            `No account found matching "${signInEmail}". Please verify or sign up as a new customer.`
-        );
+    try {
+      const credential = await signInWithEmailAndPassword(
+        firebaseAuth,
+        signInEmail.trim(),
+        signInPassword
+      );
+      if (!credential.user.emailVerified) {
+        await signOut(firebaseAuth);
+        throw new Error('Verify your email address using the link we sent before signing in.');
       }
-    }, 250);
+      await loadProfile(credential.user);
+    } catch (error) {
+      setSignInError(error instanceof Error ? error.message : 'Sign-in failed. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleSignUpSubmit = (e: React.FormEvent) => {
+  const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSignupError(null);
 
@@ -92,125 +97,28 @@ export const LoginView: React.FC<LoginViewProps> = ({
       return;
     }
 
+    if (!firebaseAuth) {
+      setSignupError('Firebase Authentication is not configured for this app.');
+      return;
+    }
+
     setIsSubmitting(true);
-
-    setTimeout(() => {
-      setIsSubmitting(false);
-      // Strictly registers as CUSTOMER (policy invariant)
-      const result = signUpCustomer({
-        name: signupName,
-        email: signupEmail,
-        tenantId: selectedTenantId,
-        password: signupPassword,
-      });
-
-      if (!result.success || !result.user) {
-        setSignupError(result.error || 'Failed to create customer account.');
-        return;
-      }
-
-      setSignupSuccessNotice(
-        `Welcome ${result.user.name}! Your verified customer account is ready. Redirecting to your Customer Dashboard...`
+    try {
+      const credential = await createUserWithEmailAndPassword(
+        firebaseAuth,
+        signupEmail.trim(),
+        signupPassword
       );
-
-      const targetTenant = tenants.find((t) => t.id === selectedTenantId) || currentTenant;
-      onSelectTenant(targetTenant);
-
-      if (onSignUpSuccess) {
-        onSignUpSuccess(result.user);
-      }
-
-      // Immediate redirect to customer dashboard
-      setTimeout(() => {
-        onLogin(result.user!);
-      }, 600);
-    }, 300);
+      await updateProfile(credential.user, { displayName: signupName.trim() });
+      await sendEmailVerification(credential.user);
+      await signOut(firebaseAuth);
+      setSignupNotice('Check your email and verify your address. You can sign in after verification.');
+    } catch (error) {
+      setSignupError(error instanceof Error ? error.message : 'Could not create your account.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
-
-  // Demo accounts for quick evaluation
-  const defaultAccounts: Array<{
-    user: User;
-    roleName: string;
-    roleBadge: string;
-    description: string;
-    accessibleDashboards: string[];
-  }> = [
-    {
-      user: dynamicUsers.find((u) => u.role === 'BUSINESS_OWNER') || {
-        id: 'usr-admin-1',
-        name: 'Alex Mwangi',
-        email: 'alex@safaripeak.co.ke',
-        role: 'BUSINESS_OWNER',
-        tenantId: selectedTenantId,
-      },
-      roleName: 'Business Owner (Admin)',
-      roleBadge: 'bg-indigo-100 text-indigo-900 border-indigo-300',
-      description: 'Full administrative access across Safari Peak stores, M-PESA channels, and team permissions.',
-      accessibleDashboards: [
-        'Executive Dashboard',
-        'Customer Storefront',
-        'Order State Machine',
-        'Inventory & Locations (Nairobi/Mombasa)',
-        'AI & WhatsApp Sales',
-        'Automations & n8n',
-        'Team & RBAC Permissions',
-      ],
-    },
-    {
-      user: dynamicUsers.find((u) => u.role === 'FULFILLMENT_STAFF') || {
-        id: 'usr-fulfill-1',
-        name: 'Marcus Kiprop',
-        email: 'marcus.k@safaripeak.co.ke',
-        role: 'FULFILLMENT_STAFF',
-        tenantId: selectedTenantId,
-      },
-      roleName: 'Fulfilment Lead',
-      roleBadge: 'bg-amber-100 text-amber-900 border-amber-300',
-      description: 'Nairobi Industrial Area hub workstation for order picking, scanning, and Sendy/Boda dispatch.',
-      accessibleDashboards: [
-        'Fulfilment Operations (Pick/Pack/Dispatch)',
-        'Customer Dashboard / Storefront',
-        'Nairobi & Mombasa Bins',
-        'Order Queue Lookup',
-      ],
-    },
-    {
-      user: dynamicUsers.find((u) => u.role === 'SUPPORT_STAFF') || {
-        id: 'usr-support-1',
-        name: 'Elena Wanjiku',
-        email: 'elena.w@safaripeak.co.ke',
-        role: 'SUPPORT_STAFF',
-        tenantId: selectedTenantId,
-      },
-      roleName: 'Customer Support Lead',
-      roleBadge: 'bg-sky-100 text-sky-900 border-sky-300',
-      description: 'Omnichannel customer service, M-PESA transaction trace, and authorized refund requests.',
-      accessibleDashboards: [
-        'Support Inbox & Omnichannel',
-        'Customer Dashboard / Storefront',
-        'Orders Lookup & Verification',
-        'WhatsApp Channel',
-      ],
-    },
-    {
-      user: dynamicUsers.find((u) => u.role === 'CUSTOMER') || {
-        id: 'usr-cust-1',
-        name: 'Sarah Nekesa',
-        email: 'sarah.nekesa@gmail.com',
-        role: 'CUSTOMER',
-        tenantId: selectedTenantId,
-      },
-      roleName: 'Customer (Shopper)',
-      roleBadge: 'bg-emerald-100 text-emerald-900 border-emerald-300',
-      description: 'Kenyan shopper browsing products, Lipa na M-PESA checkout, and live Boda delivery tracking.',
-      accessibleDashboards: ['Customer Dashboard & Storefront', 'Public Product Catalog & Cart'],
-    },
-  ];
-
-  // Accounts created or promoted dynamically
-  const newlyCreatedAccounts = dynamicUsers.filter(
-    (u) => !['usr-admin-1', 'usr-fulfill-1', 'usr-support-1', 'usr-cust-1'].includes(u.id)
-  );
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col justify-between text-slate-900 selection:bg-slate-900 selection:text-white">
@@ -250,6 +158,11 @@ export const LoginView: React.FC<LoginViewProps> = ({
               Run your business from one place. SokoFlow brings orders, inventory, customer conversations, and fulfilment together—with AI-assisted support to help your team serve customers faster.
             </p>
           )}
+          {!isFirebaseConfigured && (
+            <p className="mt-4 mx-auto max-w-xl rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-left text-xs text-amber-900">
+              Firebase Authentication is not configured. Add the Firebase web app settings to the frontend environment before signing in.
+            </p>
+          )}
 
           {/* Dedicated Page Toggle Tabs */}
           <div className="mt-6 inline-flex p-1 bg-slate-200 rounded-xl shadow-inner">
@@ -272,6 +185,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               onClick={() => {
                 setPageMode('signup');
                 setSignupError(null);
+                setSignupNotice(null);
               }}
               className={`flex items-center gap-2 px-5 py-2.5 text-xs font-bold rounded-lg transition-all ${
                 pageMode === 'signup'
@@ -319,17 +233,16 @@ export const LoginView: React.FC<LoginViewProps> = ({
               </div>
             </div>
 
-            {signupSuccessNotice && (
-              <div className="mb-6 p-4 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs flex items-center gap-3 font-medium">
-                <Check className="w-5 h-5 text-emerald-700 shrink-0" />
-                <span>{signupSuccessNotice}</span>
-              </div>
-            )}
-
             {signupError && (
               <div className="mb-4 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{signupError}</span>
+              </div>
+            )}
+
+            {signupNotice && (
+              <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium">
+                {signupNotice}
               </div>
             )}
 
@@ -516,44 +429,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
               </div>
             </div>
 
-            {/* Quick Demo Access Bar */}
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs text-left space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Instant Role Switcher (Pre-configured Kenyan Personas):</span>
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">Role Segregated</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {defaultAccounts.map((item) => (
-                  <button
-                    key={item.user.id}
-                    type="button"
-                    onClick={() => handleDirectLogin(item.user)}
-                    className="p-2.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-slate-50 hover:bg-slate-100 transition-all text-left flex flex-col justify-between group cursor-pointer"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-xs text-slate-900 group-hover:text-indigo-600 truncate">
-                          {item.user.name.split(' ')[0]}
-                        </span>
-                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${item.roleBadge}`}>
-                          {item.roleName.replace(' Staff', '').replace(' (Shopper)', '').replace(' (Admin)', '')}
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-slate-500 truncate">
-                        {item.roleName}
-                      </div>
-                    </div>
-                    <div className="mt-2 text-[10px] font-semibold text-slate-700 group-hover:text-slate-900 flex items-center gap-1">
-                      <span>Sign In</span>
-                      <ArrowRight className="w-2.5 h-2.5" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
         )}
       </main>

@@ -70,7 +70,7 @@ interface BusinessOwnerWorkspaceProps {
   currentUser?: User;
   orderSyncStatus: 'loading' | 'connected' | 'error';
   users?: User[];
-  onUpdateUserRole?: (targetUserId: string, newRole: UserRole, reason?: string) => void;
+  onUpdateUserRole?: (targetUserId: string, newRole: UserRole, reason?: string) => void | Promise<void>;
   onSwitchUser?: (user: User) => void;
   onNavigateTab: (tab: string) => void;
   onSweepExpired: () => void;
@@ -197,7 +197,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const executeRoleChange = (targetUserId: string, newRole: UserRole, customReason?: string) => {
+  const executeRoleChange = async (targetUserId: string, newRole: UserRole, customReason?: string) => {
     const target = users.find((u) => u.id === targetUserId);
     if (!target) return;
     if (onUpdateUserRole) {
@@ -209,16 +209,23 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
         ? `Demoted ${target.name} from ${target.role.replace(/_/g, ' ')} to Customer by Business Owner ${currentUser?.name || 'Alex'}`
         : `Role adjusted for ${target.name} to ${newRole.replace(/_/g, ' ')} by Business Owner ${currentUser?.name || 'Alex'}`;
 
-      onUpdateUserRole(targetUserId, newRole, customReason || defaultReason);
-      setAuditLogs(getRoleAuditHistory());
-      setRoleChangeNotice({
-        text: isPromotion
-          ? `🎉 Successfully promoted ${target.name} to ${newRole.replace(/_/g, ' ')}. Next time they log in, they will have direct access to their new staff dashboard and customer dashboard.`
-          : isDemotion
-          ? `🔻 Demoted ${target.name} to Customer. Internal staff dashboard permissions have been revoked; they are now limited to the customer storefront only.`
-          : `Updated role for ${target.name} to ${newRole.replace(/_/g, ' ')}.`,
-        type: 'success',
-      });
+      try {
+        await onUpdateUserRole(targetUserId, newRole, customReason || defaultReason);
+        setAuditLogs(getRoleAuditHistory());
+        setRoleChangeNotice({
+          text: isPromotion
+            ? `Successfully promoted ${target.name} to ${newRole.replace(/_/g, ' ')}.`
+            : isDemotion
+            ? `Demoted ${target.name} to Customer. Staff access has been revoked.`
+            : `Updated role for ${target.name} to ${newRole.replace(/_/g, ' ')}.`,
+          type: 'success',
+        });
+      } catch (error) {
+        setRoleChangeNotice({
+          text: error instanceof Error ? error.message : 'The role update failed.',
+          type: 'error',
+        });
+      }
       setTimeout(() => setRoleChangeNotice(null), 5000);
     }
     setPromoteModalUser(null);
@@ -1219,14 +1226,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                         <span>+ Support</span>
                                       </button>
 
-                                      <button
-                                        onClick={() => executeRoleChange(u.id, 'BUSINESS_OWNER')}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs"
-                                        title="Promote customer to Co-Administrator"
-                                      >
-                                        <ArrowUpRight className="w-3 h-3" />
-                                        <span>+ Admin</span>
-                                      </button>
                                     </>
                                   ) : (
                                     <>
@@ -1251,7 +1250,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                         <option value="FULFILLMENT_STAFF">📦 Fulfillment Staff</option>
                                         <option value="SUPPORT_STAFF">🎧 Support Agent</option>
                                         <option value="SALES_STAFF">🏷️ Sales Staff</option>
-                                        <option value="BUSINESS_OWNER">👑 Business Owner (Admin)</option>
                                       </select>
                                     </>
                                   )}
@@ -1450,14 +1448,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                         <span>+ Support Staff</span>
                                       </button>
 
-                                      <button
-                                        onClick={() => executeRoleChange(u.id, 'BUSINESS_OWNER')}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs"
-                                        title="Promote customer to Business Owner"
-                                      >
-                                        <ArrowUpRight className="w-3 h-3" />
-                                        <span>+ Admin</span>
-                                      </button>
                                     </>
                                   ) : (
                                     <button
@@ -2010,14 +2000,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                         <span>+ Support</span>
                                       </button>
 
-                                      <button
-                                        onClick={() => executeRoleChange(u.id, 'BUSINESS_OWNER')}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs"
-                                        title="Promote customer to Business Owner"
-                                      >
-                                        <ArrowUpRight className="w-3 h-3" />
-                                        <span>+ Admin</span>
-                                      </button>
                                     </>
                                   ) : (
                                     <>
@@ -2042,7 +2024,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                                         <option value="FULFILLMENT_STAFF">📦 Fulfillment Staff</option>
                                         <option value="SUPPORT_STAFF">🎧 Support Agent</option>
                                         <option value="SALES_STAFF">🏷️ Sales Staff</option>
-                                        <option value="BUSINESS_OWNER">👑 Business Owner (Admin)</option>
                                       </select>
                                     </>
                                   )}

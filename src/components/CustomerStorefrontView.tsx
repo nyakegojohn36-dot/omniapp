@@ -31,8 +31,8 @@ import {
 import { InventoryStore } from '../lib/inventoryEngine.ts';
 import { createCustomerOrder } from '../lib/orderService.ts';
 import { calculateOrderPricing, formatCurrency } from '../lib/pricingEngine.ts';
-import { Order, OrderAddress, PaymentMethod, Product, Tenant, UserRole, WarehouseInventory } from '../lib/types.ts';
-import { SEED_ORDERS } from '../lib/sampleData.ts';
+import { Order, OrderAddress, PaymentMethod, Product, Tenant, User as AppUser, UserRole, WarehouseInventory } from '../lib/types.ts';
+import { apiFetch } from '../lib/firebaseClient.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
 
 interface CustomerStorefrontViewProps {
@@ -41,6 +41,8 @@ interface CustomerStorefrontViewProps {
   inventories: WarehouseInventory[];
   inventoryEngine: InventoryStore;
   existingOrdersCount: number;
+  orders: Order[];
+  currentUser: AppUser;
   currentRole?: UserRole;
   onOrderCreated: (newOrder: Order) => void;
   onNavigateTab: (tab: string) => void;
@@ -70,6 +72,8 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   inventories,
   inventoryEngine,
   existingOrdersCount,
+  orders,
+  currentUser,
   currentRole = 'CUSTOMER',
   onOrderCreated,
   onNavigateTab,
@@ -122,30 +126,44 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
 
   // Form Fields - Default Kenyan Customer
   const [shippingAddress, setShippingAddress] = useState<OrderAddress>({
-    fullName: 'Sarah Nekesa',
-    addressLine1: 'Parklands Road, Westlands Plaza 4th Floor',
+    fullName: currentUser.name,
+    addressLine1: '',
     city: 'Nairobi',
     stateOrProvince: 'Nairobi County',
     postalCode: '00100',
     countryCode: 'KE',
-    phone: '+254 752 720933',
+    phone: '',
   });
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('MPESA_EXPRESS');
 
   // My Orders list
-  const [myOrders, setMyOrders] = useState<Order[]>(SEED_ORDERS);
+  const [myOrders, setMyOrders] = useState<Order[]>(orders);
   const [storeWhatsAppPhone, setStoreWhatsAppPhone] = useState<string>('254752720933');
 
   useEffect(() => {
-    fetch('/api/whatsapp/config')
-      .then((r) => r.json())
+    apiFetch('/api/whatsapp/config')
+      .then((response) => {
+        if (!response.ok) throw new Error(`Loading WhatsApp configuration failed (HTTP ${response.status}).`);
+        return response.json();
+      })
       .then((d) => {
         if (d?.displayPhoneNumber && !d.displayPhoneNumber.includes('Sandbox')) {
           setStoreWhatsAppPhone(d.displayPhoneNumber.replace(/\D/g, ''));
         }
       })
-      .catch(() => {});
+      .catch((error) => console.error('Loading WhatsApp configuration failed:', error));
   }, []);
+
+  useEffect(() => {
+    setMyOrders(orders);
+  }, [orders]);
+
+  useEffect(() => {
+    setShippingAddress((address) => ({
+      ...address,
+      fullName: currentUser.name,
+    }));
+  }, [currentUser.name]);
 
   useEffect(() => {
     if (cart.length === 0) return;
@@ -265,7 +283,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
         tenant,
         inventoryEngine,
         customerName: shippingAddress.fullName,
-        customerEmail: 'sarah.nekesa@gmail.com',
+        customerEmail: currentUser.email,
         customerPhone: shippingAddress.phone || mpesaPhone,
         items: cart,
         shippingAddress,

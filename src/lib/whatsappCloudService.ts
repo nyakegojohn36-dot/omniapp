@@ -97,6 +97,7 @@ export class WhatsAppCloudService {
     summary: string;
     payloadRedacted: Record<string, unknown>;
   }[] = [];
+  private onMessageUpdated?: (message: WhatsAppMessageRecord) => Promise<void>;
 
   constructor(
     initialConfig?: Partial<WhatsAppCloudConfig>,
@@ -184,6 +185,19 @@ export class WhatsAppCloudService {
     return { ...this.config };
   }
 
+  public setMessagePersistenceHandler(
+    handler: (message: WhatsAppMessageRecord) => Promise<void>
+  ): void {
+    this.onMessageUpdated = handler;
+  }
+
+  private persistMessageUpdate(message: WhatsAppMessageRecord): void {
+    if (!this.onMessageUpdated) return;
+    void this.onMessageUpdated(message).catch((error) => {
+      console.error('[WhatsApp] Could not persist an outbound message status update.', error);
+    });
+  }
+
   public updateConfig(
     updates: Partial<WhatsAppCloudConfig>,
     rawAccessToken?: string,
@@ -228,6 +242,7 @@ export class WhatsAppCloudService {
       if (status === 'DELIVERED' || status === 'READ') {
         this.config.messageDeliveryActive = true;
       }
+      this.persistMessageUpdate(msg);
       return true;
     }
     return false;
@@ -309,6 +324,10 @@ export class WhatsAppCloudService {
     return session;
   }
 
+  public restoreSession(session: WhatsAppCustomerSession): void {
+    this.sessions.set(session.phoneNumber, session);
+  }
+
   public setHumanTakeover(phoneNumber: string, takeover: boolean): void {
     const session = this.getSession(phoneNumber);
     session.humanTakeover = takeover;
@@ -362,6 +381,30 @@ export class WhatsAppCloudService {
     return { verified: false, error: 'Webhook verification token does not match.' };
   }
 
+  public processWebChatMessage(params: {
+    messageId: string;
+    fromNumber: string;
+    customerName: string;
+    textBody: string;
+    inventoryEngine: InventoryStore;
+    products: Product[];
+    orders: Order[];
+    tenant: Tenant;
+  }): {
+    responseText: string;
+    toolUsed?: string;
+    orderCreated?: Order;
+    humanTakeoverActive: boolean;
+  } {
+    const originalMode = this.config.mode;
+    this.config.mode = 'SIMULATED_DEMO';
+    try {
+      return this.processInboundMessage({ ...params, allowSelfOrderCreation: false });
+    } finally {
+      this.config.mode = originalMode;
+    }
+  }
+
   /**
    * Main Inbound WhatsApp Message Processor
    */
@@ -374,6 +417,7 @@ export class WhatsAppCloudService {
     products: Product[];
     orders: Order[];
     tenant: Tenant;
+    allowSelfOrderCreation?: boolean;
     onOrderCreated?: (order: Order) => void;
   }): {
     responseText: string;
@@ -390,6 +434,7 @@ export class WhatsAppCloudService {
       products,
       orders,
       tenant,
+      allowSelfOrderCreation = true,
       onOrderCreated,
     } = params;
 
@@ -481,6 +526,15 @@ export class WhatsAppCloudService {
     // 3. Multi-Step Order State Machine
     // Step: AWAITING_CONFIRMATION -> User confirms with "YES"
     if (session.step === 'AWAITING_CONFIRMATION' && session.cart && session.deliveryAddress) {
+      if (!allowSelfOrderCreation) {
+        session.step = 'IDLE';
+        session.cart = undefined;
+        session.deliveryAddress = undefined;
+        const reply = `For a secure checkout, please continue this conversation on WhatsApp at ${this.config.displayPhoneNumber}.`;
+        this.recordOutbound(fromNumber, customerName, reply);
+        return { responseText: reply, humanTakeoverActive: false };
+      }
+
       if (lower === 'yes' || lower === 'confirm' || lower === 'y' || lower.includes('confirm order')) {
         const cart = session.cart;
         const addr = session.deliveryAddress;
@@ -1014,6 +1068,7 @@ export class WhatsAppCloudService {
         if (record) {
           record.status = 'FAILED';
           record.errorMessage = errMsg;
+          this.persistMessageUpdate(record);
         }
         this.webhookLogs.push({
           id: `log-${Date.now()}`,
@@ -1044,6 +1099,7 @@ export class WhatsAppCloudService {
         if (record) {
           record.status = 'SENT';
           record.wamid = resData?.messages?.[0]?.id;
+          this.persistMessageUpdate(record);
         }
         this.webhookLogs.push({
           id: `log-${Date.now()}`,
@@ -1077,6 +1133,7 @@ export class WhatsAppCloudService {
         if (record) {
           record.status = 'FAILED';
           record.errorMessage = errorMsg;
+          this.persistMessageUpdate(record);
         }
         console.warn(
           `[Meta API] Outbound message rejected (HTTP ${res.status}, code ${code || 'unknown'}).`
@@ -1098,6 +1155,7 @@ export class WhatsAppCloudService {
       if (record) {
         record.status = 'FAILED';
         record.errorMessage = errorMsg;
+        this.persistMessageUpdate(record);
       }
       return { success: false, error: errorMsg };
     }

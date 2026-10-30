@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { InventoryStore } from '../lib/inventoryEngine.ts';
 import { Order, Product, Tenant, WarehouseInventory } from '../lib/types.ts';
+import { apiFetch } from '../lib/firebaseClient.ts';
 
 interface EmbeddedWhatsAppWidgetProps {
   tenant: Tenant;
@@ -82,50 +83,14 @@ export function EmbeddedWhatsAppWidget({
     setIsTyping(true);
 
     try {
-      // Send directly to full-stack backend WhatsApp webhook endpoint
-      const res = await fetch('/api/whatsapp/webhook', {
+      const response = await apiFetch('/api/web-chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          object: 'whatsapp_business_account',
-          entry: [
-            {
-              id: '1402546412031884',
-              changes: [
-                {
-                  value: {
-                    messaging_product: 'whatsapp',
-                    metadata: {
-                      display_phone_number: displayPhoneNumber,
-                      phone_number_id: '1386130241256254',
-                    },
-                    contacts: [
-                      {
-                        profile: { name: 'Storefront Visitor' },
-                        wa_id: cleanPhone,
-                      },
-                    ],
-                    messages: [
-                      {
-                        from: cleanPhone,
-                        id: `wamid.widget.${Date.now()}`,
-                        timestamp: `${Math.floor(Date.now() / 1000)}`,
-                        text: { body },
-                        type: 'text',
-                      },
-                    ],
-                  },
-                  field: 'messages',
-                },
-              ],
-            },
-          ],
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: body }),
       });
 
-      const data = await res.json();
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || `Chat request failed (HTTP ${response.status}).`);
       const replyText =
         data?.reply ||
         `Thanks for your message! Our store bot is processing your request. Type *CATALOGUE* to see current items.`;
@@ -142,7 +107,7 @@ export function EmbeddedWhatsAppWidget({
 
       // If an order was created, notify parent component & sync orders
       if (data?.orderCreatedId && onOrderCreated) {
-        fetch('/api/orders')
+        apiFetch('/api/orders')
           .then((r) => r.json())
           .then((d) => {
             if (d?.orders && Array.isArray(d.orders)) {
@@ -152,9 +117,10 @@ export function EmbeddedWhatsAppWidget({
               }
             }
           })
-          .catch(() => {});
+          .catch((error) => console.error('Loading the new order after chat failed:', error));
       }
     } catch (err) {
+      console.error('Embedded chat request failed:', err);
       const errorMsg: ChatMessage = {
         id: `bot-err-${Date.now()}`,
         sender: 'BOT',
