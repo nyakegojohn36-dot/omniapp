@@ -2,6 +2,33 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Runtime Environment: "HMR: Disabled. Ignore WebSocket errors."
+      window.addEventListener('unhandledrejection', function(event) {
+        var reason = event && event.reason;
+        var text = (reason && (reason.stack || reason.message || String(reason))) || '';
+        if (
+          text.indexOf('WebSocket') !== -1 ||
+          text.indexOf('@vite/client') !== -1 ||
+          text.indexOf('createWebSocketModuleRunnerTransport') !== -1
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation && event.stopImmediatePropagation();
+        }
+      });
+      window.addEventListener('error', function(event) {
+        var msg = (event && event.message) || '';
+        var filename = (event && event.filename) || '';
+        if (
+          msg.indexOf('WebSocket') !== -1 ||
+          msg.indexOf('@vite/client') !== -1 ||
+          filename.indexOf('@vite/client') !== -1
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation && event.stopImmediatePropagation();
+        }
+      }, true);
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SokoFlow | Every order. Every channel. One clear view.</title>
     <meta name="description" content="Run your business from one place. SokoFlow helps growing retailers manage orders, inventory, customer conversations, and fulfilment across sales channels—with AI-assisted support to help teams serve customers faster." />

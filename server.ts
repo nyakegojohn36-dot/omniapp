@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import express, { Request, Response, type NextFunction, type RequestHandler } from 'express';
+import express, { type Request, type Response, type NextFunction, type RequestHandler } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +39,19 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const httpServer = http.createServer(app);
-const PORT = Number(process.env.PORT) || 3000;
+function getPort(): number {
+  const portArgIdx = process.argv.findIndex((arg) => arg === '--port' || arg === '-p');
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const parsed = Number(process.argv[portArgIdx + 1]);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    return 3000;
+  }
+  return Number(process.env.PORT) || 3000;
+}
+
+const PORT = getPort();
 const allowedOrigins = new Set(
   (process.env.CORS_ALLOWED_ORIGINS || (process.env.NODE_ENV === 'production'
     ? ''
@@ -51,14 +63,26 @@ const allowedOrigins = new Set(
 
 app.use((req: Request, res: Response, next) => {
   const origin = req.header('origin');
-  if (origin && allowedOrigins.has(origin)) {
+  if (!origin) return next();
+
+  const host = req.header('host');
+  const isSameHost = Boolean(host && (origin === `http://${host}` || origin === `https://${host}`));
+  const isAllowedOrigin =
+    allowedOrigins.has(origin) ||
+    isSameHost ||
+    origin.endsWith('.run.app') ||
+    origin.includes('localhost') ||
+    origin.includes('127.0.0.1');
+
+  if (isAllowedOrigin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-  } else if (origin) {
+  } else if (req.path.startsWith('/api/') && process.env.NODE_ENV === 'production') {
     return res.status(403).json({ error: 'This frontend origin is not allowed.' });
   }
+
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -720,8 +744,7 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        ws: { server: httpServer },
-        hmr: { server: httpServer },
+        hmr: false,
       },
       appType: 'spa',
     });

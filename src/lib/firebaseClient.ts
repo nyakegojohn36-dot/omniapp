@@ -29,9 +29,7 @@ export async function apiFetch(
   init: RequestInit = {},
   firebaseUser: FirebaseUser | null = firebaseAuth?.currentUser || null
 ): Promise<Response> {
-  if (import.meta.env.PROD && !apiBaseUrl) {
-    throw new Error('Set VITE_API_BASE_URL to the Cloud Run service URL before deploying the frontend.');
-  }
+
   if (!firebaseUser) {
     throw new Error('Sign in before accessing SokoFlow data.');
   }
