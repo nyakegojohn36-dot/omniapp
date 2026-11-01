@@ -23,6 +23,7 @@ import {
   getWhatsAppSession,
   listTenantMessages,
   listTenantOrders,
+  createTenantCustomer,
   listTenantUsers,
   releaseWebhookMessage,
   requireRoles,
@@ -374,6 +375,33 @@ app.get(
   asyncRoute(async (req, res) => {
     const user = getRequestUser(req);
     res.json({ users: await listTenantUsers(user.tenantId) });
+  })
+);
+
+app.post(
+  '/api/users',
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
+  asyncRoute(async (req, res) => {
+    const actor = getRequestUser(req);
+    const { name, email, role } = req.body || {};
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'Customer full name is required.' });
+      return;
+    }
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      res.status(400).json({ error: 'A valid email address is required.' });
+      return;
+    }
+    try {
+      const newUser = await createTenantCustomer(actor.tenantId, {
+        name: name.trim(),
+        email: email.trim(),
+        role: role || 'CUSTOMER',
+      });
+      res.status(201).json({ user: newUser });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
   })
 );
 

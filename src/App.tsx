@@ -154,25 +154,38 @@ export default function App() {
     return () => clearInterval(syncInterval);
   }, [currentUser?.id]);
 
-  useEffect(() => {
-    if (!currentUser || currentRole !== 'BUSINESS_OWNER') {
-      setDynamicUsers([]);
-      return;
-    }
-    let active = true;
+  const fetchSyncedUsers = () => {
+    if (!currentUser || currentRole !== 'BUSINESS_OWNER') return;
     apiFetch('/api/users')
       .then(async (response) => {
         const data = await response.json();
-        if (!response.ok || !Array.isArray(data?.users)) {
-          throw new Error(data?.error || `Could not load team members (HTTP ${response.status}).`);
-        }
-        if (active) setDynamicUsers(data.users);
+        if (!response.ok || !Array.isArray(data?.users)) return;
+        setDynamicUsers(data.users);
       })
       .catch((error) => console.error('Loading team members failed:', error));
-    return () => {
-      active = false;
-    };
+  };
+
+  useEffect(() => {
+    if (!currentUser || currentRole !== 'BUSINESS_OWNER') return;
+    fetchSyncedUsers();
+    const userInterval = setInterval(fetchSyncedUsers, 3000);
+    return () => clearInterval(userInterval);
   }, [currentUser?.id, currentRole]);
+
+  const handleAddCustomer = async (customerData: { name: string; email: string; role?: UserRole }) => {
+    if (!currentUser) return;
+    const response = await apiFetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(customerData),
+    });
+    const data = await response.json();
+    if (!response.ok || !data?.user) {
+      throw new Error(data?.error || `Could not create customer (HTTP ${response.status}).`);
+    }
+    setDynamicUsers((prev) => [data.user, ...prev.filter((u) => u.id !== data.user.id)]);
+    return data.user as User;
+  };
 
   const handleSelectTab = (tab: string) => {
     if (isTabPermitted(currentRole, tab as TabId)) {
@@ -185,6 +198,22 @@ export default function App() {
   const handleCustomerOrderCreated = (newOrder: Order) => {
     setOrders((prev) => [newOrder, ...prev.filter((o) => o.id !== newOrder.id)]);
     refreshInventories();
+
+    if (newOrder.customerEmail) {
+      const email = newOrder.customerEmail.trim().toLowerCase();
+      setDynamicUsers((prev) => {
+        if (prev.some((u) => u.email.toLowerCase() === email)) return prev;
+        const newBuyer: User = {
+          id: `usr-ord-${newOrder.id}`,
+          tenantId: currentTenant.id,
+          name: newOrder.customerName || email.split('@')[0],
+          email,
+          role: 'CUSTOMER',
+        };
+        return [newBuyer, ...prev];
+      });
+    }
+
     apiFetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -462,6 +491,8 @@ export default function App() {
                   orderSyncStatus={orderSyncStatus}
                   users={dynamicUsers}
                   onUpdateUserRole={handleUpdateUserRole}
+                  onAddCustomer={handleAddCustomer}
+                  onRefreshUsers={fetchSyncedUsers}
                   onNavigateTab={handleSelectTab}
                   onSweepExpired={handleSweepExpired}
                   onOpenConcurrencyModal={() => setIsConcurrencyModalOpen(true)}

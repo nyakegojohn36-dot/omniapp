@@ -61,6 +61,31 @@ function documentId(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+const inMemoryUserRegistry = new Map<string, User>();
+
+function getInitialUserRegistry(): Map<string, User> {
+  if (inMemoryUserRegistry.size > 0) return inMemoryUserRegistry;
+
+  for (const u of SEED_USERS) {
+    inMemoryUserRegistry.set(u.id, { ...u });
+  }
+
+  for (const c of SEED_CUSTOMER_PROFILES) {
+    const existing = Array.from(inMemoryUserRegistry.values()).find((u) => u.email === c.email);
+    if (!existing) {
+      inMemoryUserRegistry.set(c.id, {
+        id: c.id,
+        tenantId: 'tenant-nordic',
+        name: c.name,
+        email: c.email,
+        role: 'CUSTOMER',
+      });
+    }
+  }
+
+  return inMemoryUserRegistry;
+}
+
 async function loadOrCreateUserProfile(
   decoded: {
     uid: string;
@@ -89,6 +114,15 @@ async function loadOrCreateUserProfile(
     emailVerified: Boolean(decoded.email_verified),
   };
 
+  const registry = getInitialUserRegistry();
+  registry.set(fallbackProfile.id, {
+    id: fallbackProfile.id,
+    tenantId: fallbackProfile.tenantId,
+    name: fallbackProfile.name,
+    email: fallbackProfile.email,
+    role: fallbackProfile.role,
+  });
+
   try {
     const db = getFirestoreDb();
     const userRef = db.collection('users').doc(decoded.uid);
@@ -102,6 +136,14 @@ async function loadOrCreateUserProfile(
         tenantId: typeof existing?.tenantId === 'string' ? existing.tenantId : tenantId,
         role: isConfiguredOwner ? 'BUSINESS_OWNER' : role,
       };
+
+      registry.set(profile.id, {
+        id: profile.id,
+        tenantId: profile.tenantId,
+        name: profile.name,
+        email: profile.email,
+        role: profile.role,
+      });
 
       transaction.set(userRef, {
         id: profile.id,
@@ -170,29 +212,43 @@ export function requireRoles(...roles: UserRole[]): RequestHandler {
   };
 }
 
-const inMemoryUserRegistry = new Map<string, User>();
+export async function createTenantCustomer(
+  tenantId: string,
+  data: { name: string; email: string; role?: UserRole }
+): Promise<User> {
+  const email = data.email.trim().toLowerCase();
+  const name = data.name.trim();
+  const role: UserRole = data.role && VALID_ROLES.includes(data.role) ? data.role : 'CUSTOMER';
+  const registry = getInitialUserRegistry();
 
-function getInitialUserRegistry(): Map<string, User> {
-  if (inMemoryUserRegistry.size > 0) return inMemoryUserRegistry;
-
-  for (const u of SEED_USERS) {
-    inMemoryUserRegistry.set(u.id, { ...u });
+  const existing = Array.from(registry.values()).find((u) => u.email.toLowerCase() === email);
+  if (existing) {
+    throw new Error('A customer or user with this email address already exists.');
   }
 
-  for (const c of SEED_CUSTOMER_PROFILES) {
-    const existing = Array.from(inMemoryUserRegistry.values()).find((u) => u.email === c.email);
-    if (!existing) {
-      inMemoryUserRegistry.set(c.id, {
-        id: c.id,
-        tenantId: 'tenant-nordic',
-        name: c.name,
-        email: c.email,
-        role: 'CUSTOMER',
-      });
-    }
+  const newId = `usr-cust-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const newUser: User = {
+    id: newId,
+    tenantId,
+    name,
+    email,
+    role,
+  };
+
+  registry.set(newId, newUser);
+
+  try {
+    const db = getFirestoreDb();
+    await db.collection('users').doc(newId).set({
+      ...newUser,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('[Users] Firestore customer write fallback:', (err as Error).message);
   }
 
-  return inMemoryUserRegistry;
+  return newUser;
 }
 
 export async function listTenantUsers(tenantId: string): Promise<User[]> {
@@ -201,6 +257,31 @@ export async function listTenantUsers(tenantId: string): Promise<User[]> {
 
   for (const u of registry.values()) {
     list.set(u.id, { ...u, tenantId });
+  }
+
+  // Also auto-discover any customers from tenant orders
+  try {
+    const tenantOrders = await listTenantOrders(tenantId);
+    for (const order of tenantOrders) {
+      if (order.customerEmail) {
+        const email = order.customerEmail.trim().toLowerCase();
+        const existing = Array.from(list.values()).find((u) => u.email.toLowerCase() === email);
+        if (!existing) {
+          const autoId = `usr-ord-${order.id}`;
+          const autoUser: User = {
+            id: autoId,
+            tenantId,
+            name: order.customerName || email.split('@')[0],
+            email,
+            role: 'CUSTOMER',
+          };
+          registry.set(autoId, autoUser);
+          list.set(autoId, autoUser);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Users] Order customer extraction notice:', (err as Error).message);
   }
 
   try {

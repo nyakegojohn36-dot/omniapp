@@ -42,6 +42,7 @@ import {
   X,
   Menu,
   Download,
+  UserPlus,
 } from 'lucide-react';
 import {
   IntegrationConfig,
@@ -71,6 +72,8 @@ interface BusinessOwnerWorkspaceProps {
   orderSyncStatus: 'loading' | 'connected' | 'error';
   users?: User[];
   onUpdateUserRole?: (targetUserId: string, newRole: UserRole, reason?: string) => void | Promise<void>;
+  onAddCustomer?: (customer: { name: string; email: string; role?: UserRole }) => Promise<User | void>;
+  onRefreshUsers?: () => void;
   onSwitchUser?: (user: User) => void;
   onNavigateTab: (tab: string) => void;
   onSweepExpired: () => void;
@@ -112,6 +115,8 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   orderSyncStatus,
   users = [],
   onUpdateUserRole,
+  onAddCustomer,
+  onRefreshUsers,
   onSwitchUser,
   onNavigateTab,
   onSweepExpired,
@@ -155,6 +160,56 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   const [promoteModalUser, setPromoteModalUser] = useState<User | null>(null);
   const [modalTargetRole, setModalTargetRole] = useState<UserRole>('FULFILLMENT_STAFF');
   const [modalReason, setModalReason] = useState<string>('');
+
+  // Add Customer Modal State
+  const [isAddCustomerModalOpen, setIsAddCustomerModalOpen] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [newCustomerEmail, setNewCustomerEmail] = useState('');
+  const [newCustomerRole, setNewCustomerRole] = useState<UserRole>('CUSTOMER');
+  const [isAddingCustomer, setIsAddingCustomer] = useState(false);
+  const [addCustomerError, setAddCustomerError] = useState<string | null>(null);
+  const [isRefreshingUsers, setIsRefreshingUsers] = useState(false);
+
+  const handleManualRefreshUsers = () => {
+    setIsRefreshingUsers(true);
+    if (onRefreshUsers) onRefreshUsers();
+    setTimeout(() => setIsRefreshingUsers(false), 600);
+  };
+
+  const handleCreateCustomerSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddCustomerError(null);
+    if (!newCustomerName.trim()) {
+      setAddCustomerError('Customer name is required.');
+      return;
+    }
+    if (!newCustomerEmail.trim() || !newCustomerEmail.includes('@')) {
+      setAddCustomerError('A valid email address is required.');
+      return;
+    }
+    setIsAddingCustomer(true);
+    try {
+      if (onAddCustomer) {
+        await onAddCustomer({
+          name: newCustomerName.trim(),
+          email: newCustomerEmail.trim(),
+          role: newCustomerRole,
+        });
+      }
+      setRoleChangeNotice({
+        text: `Customer ${newCustomerName.trim()} created successfully.`,
+        type: 'success',
+      });
+      setNewCustomerName('');
+      setNewCustomerEmail('');
+      setNewCustomerRole('CUSTOMER');
+      setIsAddCustomerModalOpen(false);
+    } catch (err) {
+      setAddCustomerError(err instanceof Error ? err.message : 'Could not add customer.');
+    } finally {
+      setIsAddingCustomer(false);
+    }
+  };
 
   const handleExportOrdersCsv = () => {
     const headers = [
@@ -1333,34 +1388,64 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
           {/* SECTION: CUSTOMERS */}
           {activeMenu === 'customers' && (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs space-y-4">
-              <div className="p-5 border-b border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">Customers & Role Delegation</h3>
-                  <p className="text-xs text-slate-500">
+                  <div className="flex items-center gap-3">
+                    <h3 className="text-base font-bold text-slate-900">Customers & Role Delegation</h3>
+                    <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-xs font-semibold">
+                      Live sync active
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
                     Manage customer accounts, promote customers to staff roles, or view lifetime buyer spend.
                   </p>
                 </div>
 
-                <div className="inline-flex p-1 bg-slate-100 rounded-xl text-xs font-semibold">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex p-1 bg-slate-100 rounded-xl text-xs font-semibold">
+                    <button
+                      onClick={() => setCustomerSubTab('rbac')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        customerSubTab === 'rbac'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Registered Customers & Role Promotion ({users.filter((u) => u.role === 'CUSTOMER').length})
+                    </button>
+                    <button
+                      onClick={() => setCustomerSubTab('vip')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        customerSubTab === 'vip'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      VIP Profiles & Spending
+                    </button>
+                  </div>
+
                   <button
-                    onClick={() => setCustomerSubTab('rbac')}
-                    className={`px-3 py-1.5 rounded-lg transition-all ${
-                      customerSubTab === 'rbac'
-                        ? 'bg-white text-slate-900 shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    type="button"
+                    onClick={handleManualRefreshUsers}
+                    disabled={isRefreshingUsers}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-all shadow-2xs disabled:opacity-50"
+                    title="Refresh latest customers"
                   >
-                    Registered Customers & Role Promotion ({users.filter((u) => u.role === 'CUSTOMER').length})
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingUsers ? 'animate-spin text-emerald-600' : ''}`} />
+                    <span>{isRefreshingUsers ? 'Syncing...' : 'Refresh'}</span>
                   </button>
+
                   <button
-                    onClick={() => setCustomerSubTab('vip')}
-                    className={`px-3 py-1.5 rounded-lg transition-all ${
-                      customerSubTab === 'vip'
-                        ? 'bg-white text-slate-900 shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    type="button"
+                    onClick={() => {
+                      setAddCustomerError(null);
+                      setIsAddCustomerModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
                   >
-                    VIP Profiles & Spending
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>+ Add Customer</span>
                   </button>
                 </div>
               </div>
@@ -2325,6 +2410,104 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* MODAL: ADD CUSTOMER ACCOUNT */}
+      {isAddCustomerModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center border border-emerald-200">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">Add New Customer Account</h3>
+                  <p className="text-xs text-slate-500">Create a verified customer profile in your workspace</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddCustomerModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {addCustomerError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{addCustomerError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateCustomerSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Full Customer Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newCustomerName}
+                  onChange={(e) => setNewCustomerName(e.target.value)}
+                  placeholder="e.g. Wanjiku Kamau"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Email Address <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={newCustomerEmail}
+                  onChange={(e) => setNewCustomerEmail(e.target.value)}
+                  placeholder="e.g. wanjiku.kamau@gmail.com"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Initial Role Assignment
+                </label>
+                <select
+                  value={newCustomerRole}
+                  onChange={(e) => setNewCustomerRole(e.target.value as UserRole)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer"
+                >
+                  <option value="CUSTOMER">🛍️ Customer (Shopper / Buyer)</option>
+                  <option value="FULFILLMENT_STAFF">📦 Fulfillment Staff</option>
+                  <option value="SUPPORT_STAFF">🎧 Support Agent</option>
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  You can promote or demote this account at any time from this table.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddCustomerModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAddingCustomer}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs disabled:opacity-50"
+                >
+                  {isAddingCustomer ? 'Adding...' : 'Create Customer'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
