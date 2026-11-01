@@ -4,30 +4,90 @@
     <meta charset="UTF-8" />
     <script>
       // Runtime Environment: "HMR: Disabled. Ignore WebSocket errors."
-      window.addEventListener('unhandledrejection', function(event) {
-        var reason = event && event.reason;
-        var text = (reason && (reason.stack || reason.message || String(reason))) || '';
-        if (
-          text.indexOf('WebSocket') !== -1 ||
-          text.indexOf('@vite/client') !== -1 ||
-          text.indexOf('createWebSocketModuleRunnerTransport') !== -1
-        ) {
-          event.preventDefault();
-          event.stopImmediatePropagation && event.stopImmediatePropagation();
+      (function() {
+        if (typeof window !== 'undefined' && window.WebSocket) {
+          var RealWebSocket = window.WebSocket;
+          var MockWebSocket = function(url, protocols) {
+            var isViteHmr = protocols === 'vite-hmr' || (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1);
+            if (isViteHmr) {
+              var listeners = {};
+              var dummy = {
+                OPEN: 1,
+                CLOSED: 3,
+                readyState: 1,
+                url: String(url),
+                protocol: 'vite-hmr',
+                extensions: '',
+                bufferedAmount: 0,
+                binaryType: 'blob',
+                addEventListener: function(type, fn) {
+                  listeners[type] = listeners[type] || [];
+                  listeners[type].push(fn);
+                  if (type === 'open') {
+                    setTimeout(function() { try { fn({ type: 'open' }); } catch (e) {} }, 0);
+                  }
+                },
+                removeEventListener: function(type, fn) {
+                  if (!listeners[type]) return;
+                  listeners[type] = listeners[type].filter(function(f) { return f !== fn; });
+                },
+                send: function() {},
+                close: function() { dummy.readyState = 3; }
+              };
+              return dummy;
+            }
+            return new RealWebSocket(url, protocols);
+          };
+          MockWebSocket.prototype = RealWebSocket.prototype;
+          MockWebSocket.CONNECTING = 0;
+          MockWebSocket.OPEN = 1;
+          MockWebSocket.CLOSING = 2;
+          MockWebSocket.CLOSED = 3;
+          window.WebSocket = MockWebSocket;
         }
-      });
-      window.addEventListener('error', function(event) {
-        var msg = (event && event.message) || '';
-        var filename = (event && event.filename) || '';
-        if (
-          msg.indexOf('WebSocket') !== -1 ||
-          msg.indexOf('@vite/client') !== -1 ||
-          filename.indexOf('@vite/client') !== -1
-        ) {
-          event.preventDefault();
-          event.stopImmediatePropagation && event.stopImmediatePropagation();
-        }
-      }, true);
+
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var str = args.map(function(a) {
+            return (a && (a.message || a.stack || String(a))) || '';
+          }).join(' ');
+          if (
+            str.indexOf('[vite] failed to connect to websocket') !== -1 ||
+            str.indexOf('WebSocket closed without opened') !== -1 ||
+            str.indexOf('@vite/client') !== -1
+          ) {
+            return;
+          }
+          return origConsoleError.apply(console, arguments);
+        };
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var text = (reason && (reason.stack || reason.message || String(reason))) || '';
+          if (
+            text.indexOf('WebSocket') !== -1 ||
+            text.indexOf('@vite/client') !== -1 ||
+            text.indexOf('createWebSocketModuleRunnerTransport') !== -1
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation && event.stopImmediatePropagation();
+          }
+        });
+
+        window.addEventListener('error', function(event) {
+          var msg = (event && event.message) || '';
+          var filename = (event && event.filename) || '';
+          if (
+            msg.indexOf('WebSocket') !== -1 ||
+            msg.indexOf('@vite/client') !== -1 ||
+            filename.indexOf('@vite/client') !== -1
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation && event.stopImmediatePropagation();
+          }
+        }, true);
+      })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SokoFlow | Every order. Every channel. One clear view.</title>

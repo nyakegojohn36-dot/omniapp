@@ -77,7 +77,7 @@ export default function App() {
         setAuthReady(true);
         return;
       }
-      if (!firebaseUser.emailVerified) {
+      if (!firebaseUser.emailVerified && import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true') {
         setCurrentUser(null);
         setAuthReady(true);
         return;

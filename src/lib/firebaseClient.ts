@@ -22,7 +22,17 @@ const firebaseApp = isFirebaseConfigured
 
 export const firebaseAuth: Auth | null = firebaseApp ? getAuth(firebaseApp) : null;
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+function getApiBaseUrl(): string {
+  const raw = import.meta.env.VITE_API_BASE_URL;
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed.replace(/\/+$/, '');
+  }
+  return '';
+}
+
+const apiBaseUrl = getApiBaseUrl();
 
 export async function apiFetch(
   path: string,

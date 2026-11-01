@@ -76,7 +76,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
         signInEmail.trim(),
         signInPassword
       );
-      if (!credential.user.emailVerified) {
+      if (!credential.user.emailVerified && import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true') {
         await signOut(firebaseAuth);
         throw new Error('Verify your email address using the link we sent before signing in.');
       }
@@ -110,9 +110,17 @@ export const LoginView: React.FC<LoginViewProps> = ({
         signupPassword
       );
       await updateProfile(credential.user, { displayName: signupName.trim() });
-      await sendEmailVerification(credential.user);
-      await signOut(firebaseAuth);
-      setSignupNotice('Check your email and verify your address. You can sign in after verification.');
+      try {
+        await sendEmailVerification(credential.user);
+      } catch (e) {
+        console.warn('Email verification notice:', e);
+      }
+      if (import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true') {
+        await signOut(firebaseAuth);
+        setSignupNotice('Check your email and verify your address. You can sign in after verification.');
+      } else {
+        await loadProfile(credential.user);
+      }
     } catch (error) {
       setSignupError(error instanceof Error ? error.message : 'Could not create your account.');
     } finally {
