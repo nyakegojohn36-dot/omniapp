@@ -71,9 +71,10 @@ interface BusinessOwnerWorkspaceProps {
   currentUser?: User;
   orderSyncStatus: 'loading' | 'connected' | 'error';
   users?: User[];
+  userSyncStatus: 'loading' | 'connected' | 'error';
   onUpdateUserRole?: (targetUserId: string, newRole: UserRole, reason?: string) => void | Promise<void>;
   onAddCustomer?: (customer: { name: string; email: string; role?: UserRole }) => Promise<User | void>;
-  onRefreshUsers?: () => void;
+  onRefreshUsers?: () => void | Promise<void>;
   onSwitchUser?: (user: User) => void;
   onNavigateTab: (tab: string) => void;
   onSweepExpired: () => void;
@@ -114,6 +115,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   currentUser,
   orderSyncStatus,
   users = [],
+  userSyncStatus,
   onUpdateUserRole,
   onAddCustomer,
   onRefreshUsers,
@@ -170,10 +172,13 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
   const [addCustomerError, setAddCustomerError] = useState<string | null>(null);
   const [isRefreshingUsers, setIsRefreshingUsers] = useState(false);
 
-  const handleManualRefreshUsers = () => {
+  const handleManualRefreshUsers = async () => {
     setIsRefreshingUsers(true);
-    if (onRefreshUsers) onRefreshUsers();
-    setTimeout(() => setIsRefreshingUsers(false), 600);
+    try {
+      await onRefreshUsers?.();
+    } finally {
+      setIsRefreshingUsers(false);
+    }
   };
 
   const handleCreateCustomerSubmit = async (e: React.FormEvent) => {
@@ -197,7 +202,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
         });
       }
       setRoleChangeNotice({
-        text: `Customer ${newCustomerName.trim()} created successfully.`,
+        text: `Customer record for ${newCustomerName.trim()} created successfully.`,
         type: 'success',
       });
       setNewCustomerName('');
@@ -1392,8 +1397,18 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                 <div>
                   <div className="flex items-center gap-3">
                     <h3 className="text-base font-bold text-slate-900">Customers & Role Delegation</h3>
-                    <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-xs font-semibold">
-                      Live sync active
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold border ${
+                      userSyncStatus === 'connected'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : userSyncStatus === 'error'
+                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                    }`}>
+                      {userSyncStatus === 'connected'
+                        ? 'Live sync active'
+                        : userSyncStatus === 'error'
+                        ? 'Account sync unavailable'
+                        : 'Syncing accounts...'}
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
@@ -1427,7 +1442,14 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
 
                   <button
                     type="button"
-                    onClick={handleManualRefreshUsers}
+                    onClick={() => {
+                      void handleManualRefreshUsers().catch((error) => {
+                        setRoleChangeNotice({
+                          text: error instanceof Error ? error.message : 'Could not refresh customer accounts.',
+                          type: 'error',
+                        });
+                      });
+                    }}
                     disabled={isRefreshingUsers}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-all shadow-2xs disabled:opacity-50"
                     title="Refresh latest customers"
@@ -2423,8 +2445,10 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                   <UserPlus className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 text-sm">Add New Customer Account</h3>
-                  <p className="text-xs text-slate-500">Create a verified customer profile in your workspace</p>
+                  <h3 className="font-bold text-slate-900 text-sm">Add Customer Record</h3>
+                  <p className="text-xs text-slate-500">
+                    New sign-ups appear here automatically. Manually added records do not create login credentials.
+                  </p>
                 </div>
               </div>
               <button

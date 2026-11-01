@@ -400,7 +400,16 @@ app.post(
       });
       res.status(201).json({ user: newUser });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      const message = err instanceof Error ? err.message : 'Could not create customer record.';
+      if (message === 'A customer or user with this email address already exists.') {
+        res.status(409).json({ error: message });
+        return;
+      }
+      if (message === 'Only customer and staff roles may be assigned from the workspace.') {
+        res.status(400).json({ error: message });
+        return;
+      }
+      throw err;
     }
   })
 );

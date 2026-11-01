@@ -15,7 +15,6 @@ import type {
   WhatsAppCustomerSession,
   WhatsAppMessageRecord,
 } from './types.ts';
-import { SEED_CUSTOMER_PROFILES, SEED_USERS } from './sampleData.ts';
 
 export interface AuthenticatedUser extends User {
   emailVerified: boolean;
@@ -61,31 +60,6 @@ function documentId(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-const inMemoryUserRegistry = new Map<string, User>();
-
-function getInitialUserRegistry(): Map<string, User> {
-  if (inMemoryUserRegistry.size > 0) return inMemoryUserRegistry;
-
-  for (const u of SEED_USERS) {
-    inMemoryUserRegistry.set(u.id, { ...u });
-  }
-
-  for (const c of SEED_CUSTOMER_PROFILES) {
-    const existing = Array.from(inMemoryUserRegistry.values()).find((u) => u.email === c.email);
-    if (!existing) {
-      inMemoryUserRegistry.set(c.id, {
-        id: c.id,
-        tenantId: 'tenant-nordic',
-        name: c.name,
-        email: c.email,
-        role: 'CUSTOMER',
-      });
-    }
-  }
-
-  return inMemoryUserRegistry;
-}
-
 async function loadOrCreateUserProfile(
   decoded: {
     uid: string;
@@ -114,53 +88,50 @@ async function loadOrCreateUserProfile(
     emailVerified: Boolean(decoded.email_verified),
   };
 
-  const registry = getInitialUserRegistry();
-  registry.set(fallbackProfile.id, {
-    id: fallbackProfile.id,
-    tenantId: fallbackProfile.tenantId,
-    name: fallbackProfile.name,
-    email: fallbackProfile.email,
-    role: fallbackProfile.role,
+  const db = getFirestoreDb();
+  const usersCollection = db.collection('users');
+  const userRef = usersCollection.doc(decoded.uid);
+  const profile = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(userRef);
+    const existing = snapshot.data();
+    const emailMatch = snapshot.exists
+      ? null
+      : await transaction.get(usersCollection.where('email', '==', email).limit(1));
+    const matchingDoc = emailMatch?.docs.find(
+      (doc) => doc.data().tenantId === tenantId
+    );
+    const matchingProfile = matchingDoc?.data();
+    const role = VALID_ROLES.find(
+      (candidate) => candidate === (existing?.role || matchingProfile?.role)
+    ) || fallbackProfile.role;
+    const savedProfile: AuthenticatedUser = {
+      ...fallbackProfile,
+      name: decoded.name || existing?.name || matchingProfile?.name || fallbackProfile.name,
+      tenantId: typeof existing?.tenantId === 'string'
+        ? existing.tenantId
+        : typeof matchingProfile?.tenantId === 'string'
+        ? matchingProfile.tenantId
+        : tenantId,
+      role: isConfiguredOwner ? 'BUSINESS_OWNER' : role,
+    };
+
+    if (matchingDoc && matchingDoc.id !== userRef.id) {
+      transaction.delete(matchingDoc.ref);
+    }
+    transaction.set(userRef, {
+      id: savedProfile.id,
+      email: savedProfile.email,
+      name: savedProfile.name,
+      tenantId: savedProfile.tenantId,
+      role: savedProfile.role,
+      updatedAt: new Date().toISOString(),
+      ...(snapshot.exists ? {} : { createdAt: new Date().toISOString() }),
+    }, { merge: true });
+
+    return savedProfile;
   });
 
-  try {
-    const db = getFirestoreDb();
-    const userRef = db.collection('users').doc(decoded.uid);
-    return await db.runTransaction(async (transaction) => {
-      const snapshot = await transaction.get(userRef);
-      const existing = snapshot.data();
-      const role = VALID_ROLES.find((candidate) => candidate === existing?.role) || fallbackProfile.role;
-      const profile: AuthenticatedUser = {
-        ...fallbackProfile,
-        name: decoded.name || existing?.name || fallbackProfile.name,
-        tenantId: typeof existing?.tenantId === 'string' ? existing.tenantId : tenantId,
-        role: isConfiguredOwner ? 'BUSINESS_OWNER' : role,
-      };
-
-      registry.set(profile.id, {
-        id: profile.id,
-        tenantId: profile.tenantId,
-        name: profile.name,
-        email: profile.email,
-        role: profile.role,
-      });
-
-      transaction.set(userRef, {
-        id: profile.id,
-        email: profile.email,
-        name: profile.name,
-        tenantId: profile.tenantId,
-        role: profile.role,
-        updatedAt: new Date().toISOString(),
-        ...(snapshot.exists ? {} : { createdAt: new Date().toISOString() }),
-      }, { merge: true });
-
-      return profile;
-    });
-  } catch (error) {
-    console.warn('[Auth] Firestore storage unavailable, using verified profile:', (error as Error).message);
-    return fallbackProfile;
-  }
+  return profile;
 }
 
 export const authenticateRequest: RequestHandler = async (req, res, next) => {
@@ -218,89 +189,55 @@ export async function createTenantCustomer(
 ): Promise<User> {
   const email = data.email.trim().toLowerCase();
   const name = data.name.trim();
-  const role: UserRole = data.role && VALID_ROLES.includes(data.role) ? data.role : 'CUSTOMER';
-  const registry = getInitialUserRegistry();
-
-  const existing = Array.from(registry.values()).find((u) => u.email.toLowerCase() === email);
-  if (existing) {
-    throw new Error('A customer or user with this email address already exists.');
+  const assignableRoles: UserRole[] = [
+    'CUSTOMER',
+    'SALES_STAFF',
+    'FULFILLMENT_STAFF',
+    'SUPPORT_STAFF',
+  ];
+  const role = data.role || 'CUSTOMER';
+  if (!assignableRoles.includes(role)) {
+    throw new Error('Only customer and staff roles may be assigned from the workspace.');
   }
 
-  const newId = `usr-cust-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  const newUser: User = {
-    id: newId,
-    tenantId,
-    name,
-    email,
-    role,
-  };
+  const db = getFirestoreDb();
+  const usersCollection = db.collection('users');
+  const userRef = usersCollection.doc();
+  const now = new Date().toISOString();
+  const newUser: User = { id: userRef.id, tenantId, name, email, role };
 
-  registry.set(newId, newUser);
-
-  try {
-    const db = getFirestoreDb();
-    await db.collection('users').doc(newId).set({
+  await db.runTransaction(async (transaction) => {
+    const matches = await transaction.get(
+      usersCollection.where('email', '==', email).limit(1)
+    );
+    if (!matches.empty) {
+      throw new Error('A customer or user with this email address already exists.');
+    }
+    transaction.create(userRef, {
       ...newUser,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     });
-  } catch (err) {
-    console.warn('[Users] Firestore customer write fallback:', (err as Error).message);
-  }
+  });
 
   return newUser;
 }
 
 export async function listTenantUsers(tenantId: string): Promise<User[]> {
-  const registry = getInitialUserRegistry();
   const list = new Map<string, User>();
-
-  for (const u of registry.values()) {
-    list.set(u.id, { ...u, tenantId });
-  }
-
-  // Also auto-discover any customers from tenant orders
-  try {
-    const tenantOrders = await listTenantOrders(tenantId);
-    for (const order of tenantOrders) {
-      if (order.customerEmail) {
-        const email = order.customerEmail.trim().toLowerCase();
-        const existing = Array.from(list.values()).find((u) => u.email.toLowerCase() === email);
-        if (!existing) {
-          const autoId = `usr-ord-${order.id}`;
-          const autoUser: User = {
-            id: autoId,
-            tenantId,
-            name: order.customerName || email.split('@')[0],
-            email,
-            role: 'CUSTOMER',
-          };
-          registry.set(autoId, autoUser);
-          list.set(autoId, autoUser);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[Users] Order customer extraction notice:', (err as Error).message);
-  }
-
-  try {
-    const snapshot = await getFirestoreDb()
-      .collection('users')
-      .where('tenantId', '==', tenantId)
-      .get();
-    for (const doc of snapshot.docs) {
-      const data = doc.data();
-      list.set(doc.id, {
-        id: doc.id,
-        tenantId: data.tenantId || tenantId,
-        name: data.name,
-        email: data.email,
-        role: data.role,
-      } as User);
-    }
-  } catch (error) {
-    console.warn('[Users] Firestore read unavailable, using memory registry:', (error as Error).message);
+  const snapshot = await getFirestoreDb()
+    .collection('users')
+    .where('tenantId', '==', tenantId)
+    .get();
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    list.set(doc.id, {
+      id: doc.id,
+      tenantId: data.tenantId || tenantId,
+      name: data.name,
+      email: data.email,
+      role: data.role,
+    } as User);
   }
 
   return Array.from(list.values());
@@ -319,31 +256,33 @@ export async function updateTenantUserRole(
     throw new Error('You cannot change your own role.');
   }
 
-  const registry = getInitialUserRegistry();
-  const target = registry.get(targetUserId) ||
-    Array.from(registry.values()).find((u) => u.id === targetUserId);
+  const db = getFirestoreDb();
+  const targetRef = db.collection('users').doc(targetUserId);
+  const target = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(targetRef);
+    if (!snapshot.exists) return null;
 
-  if (target) {
-    if (target.role === 'BUSINESS_OWNER' || target.role === 'SUPER_ADMIN') {
+    const data = snapshot.data()!;
+    if (data.tenantId !== tenantId) return null;
+    if (data.role === 'BUSINESS_OWNER' || data.role === 'SUPER_ADMIN') {
       throw new Error('Owner and administrator roles cannot be changed here.');
     }
-    target.role = newRole;
-    target.tenantId = tenantId;
-  }
 
-  try {
-    const db = getFirestoreDb();
-    const targetRef = db.collection('users').doc(targetUserId);
-    await targetRef.set({
+    transaction.update(targetRef, {
       role: newRole,
       updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  } catch (error) {
-    console.warn('[Users] Firestore role update unavailable, updated in memory:', (error as Error).message);
-  }
+    });
 
-  if (target) return { ...target };
-  return null;
+    return {
+      id: snapshot.id,
+      tenantId,
+      name: typeof data.name === 'string' ? data.name : '',
+      email: typeof data.email === 'string' ? data.email : '',
+      role: newRole,
+    } satisfies User;
+  });
+
+  return target;
 }
 
 const fallbackOrders = new Map<string, Order>();

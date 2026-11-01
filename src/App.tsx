@@ -48,6 +48,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [currentRole, setCurrentRole] = useState<UserRole>('CUSTOMER');
+  const [userSyncStatus, setUserSyncStatus] = useState<'loading' | 'connected' | 'error'>('loading');
   const [activeTab, setActiveTab] = useState<string>('storefront');
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [isConcurrencyModalOpen, setIsConcurrencyModalOpen] = useState<boolean>(false);
@@ -154,21 +155,37 @@ export default function App() {
     return () => clearInterval(syncInterval);
   }, [currentUser?.id]);
 
-  const fetchSyncedUsers = () => {
-    if (!currentUser || currentRole !== 'BUSINESS_OWNER') return;
-    apiFetch('/api/users')
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok || !Array.isArray(data?.users)) return;
-        setDynamicUsers(data.users);
-      })
-      .catch((error) => console.error('Loading team members failed:', error));
+  const fetchSyncedUsers = async () => {
+    if (!currentUser || !['BUSINESS_OWNER', 'SUPER_ADMIN'].includes(currentRole)) return;
+    try {
+      const response = await apiFetch('/api/users');
+      const data = await response.json();
+      if (!response.ok || !Array.isArray(data?.users)) {
+        throw new Error(data?.error || `Could not load customer accounts (HTTP ${response.status}).`);
+      }
+      setDynamicUsers(data.users);
+      setUserSyncStatus('connected');
+    } catch (error) {
+      setDynamicUsers([]);
+      setUserSyncStatus('error');
+      throw error;
+    }
   };
 
   useEffect(() => {
-    if (!currentUser || currentRole !== 'BUSINESS_OWNER') return;
-    fetchSyncedUsers();
-    const userInterval = setInterval(fetchSyncedUsers, 3000);
+    if (!currentUser || !['BUSINESS_OWNER', 'SUPER_ADMIN'].includes(currentRole)) return;
+    setUserSyncStatus('loading');
+    let hasLoggedSyncError = false;
+    const syncUsers = () => {
+      fetchSyncedUsers().catch((error) => {
+        if (!hasLoggedSyncError) {
+          console.error('Loading customer accounts failed:', error);
+          hasLoggedSyncError = true;
+        }
+      });
+    };
+    syncUsers();
+    const userInterval = setInterval(syncUsers, 3000);
     return () => clearInterval(userInterval);
   }, [currentUser?.id, currentRole]);
 
@@ -374,24 +391,17 @@ export default function App() {
   };
 
   const handleUpdateUserRole = async (targetUserId: string, newRole: UserRole, reason?: string) => {
-    if (!currentUser) return;
-    setDynamicUsers((users) =>
-      users.map((user) => (user.id === targetUserId ? { ...user, role: newRole } : user))
-    );
-    try {
-      const response = await apiFetch(`/api/users/${encodeURIComponent(targetUserId)}/role`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: newRole, reason }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data?.user) {
-        throw new Error(data?.error || `Could not update role (HTTP ${response.status}).`);
-      }
-      setDynamicUsers((users) => users.map((user) => (user.id === data.user.id ? data.user : user)));
-    } catch (err) {
-      console.warn('Role update fallback:', err);
+    if (!currentUser) throw new Error('Sign in before changing account roles.');
+    const response = await apiFetch(`/api/users/${encodeURIComponent(targetUserId)}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: newRole, reason }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data?.user) {
+      throw new Error(data?.error || `Could not update role (HTTP ${response.status}).`);
     }
+    setDynamicUsers((users) => users.map((user) => (user.id === data.user.id ? data.user : user)));
   };
 
   if (!authReady) {
@@ -490,6 +500,7 @@ export default function App() {
                   currentUser={currentUser}
                   orderSyncStatus={orderSyncStatus}
                   users={dynamicUsers}
+                  userSyncStatus={userSyncStatus}
                   onUpdateUserRole={handleUpdateUserRole}
                   onAddCustomer={handleAddCustomer}
                   onRefreshUsers={fetchSyncedUsers}
