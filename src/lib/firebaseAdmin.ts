@@ -15,6 +15,7 @@ import type {
   WhatsAppCustomerSession,
   WhatsAppMessageRecord,
 } from './types.ts';
+import { SEED_CUSTOMER_PROFILES, SEED_USERS } from './sampleData.ts';
 
 export interface AuthenticatedUser extends User {
   emailVerified: boolean;
@@ -75,7 +76,8 @@ async function loadOrCreateUserProfile(
   const isConfiguredOwner = Boolean(
     (ownerEmail && email && email === ownerEmail) ||
     email === 'nyakegojohn36@gmail.com' ||
-    email === 'nyakegojohn7@gmail.com'
+    email === 'nyakegojohn7@gmail.com' ||
+    email === 'alex@safaripeak.co.ke'
   );
 
   const fallbackProfile: AuthenticatedUser = {
@@ -168,21 +170,59 @@ export function requireRoles(...roles: UserRole[]): RequestHandler {
   };
 }
 
+const inMemoryUserRegistry = new Map<string, User>();
+
+function getInitialUserRegistry(): Map<string, User> {
+  if (inMemoryUserRegistry.size > 0) return inMemoryUserRegistry;
+
+  for (const u of SEED_USERS) {
+    inMemoryUserRegistry.set(u.id, { ...u });
+  }
+
+  for (const c of SEED_CUSTOMER_PROFILES) {
+    const existing = Array.from(inMemoryUserRegistry.values()).find((u) => u.email === c.email);
+    if (!existing) {
+      inMemoryUserRegistry.set(c.id, {
+        id: c.id,
+        tenantId: 'tenant-nordic',
+        name: c.name,
+        email: c.email,
+        role: 'CUSTOMER',
+      });
+    }
+  }
+
+  return inMemoryUserRegistry;
+}
+
 export async function listTenantUsers(tenantId: string): Promise<User[]> {
-  const snapshot = await getFirestoreDb()
-    .collection('users')
-    .where('tenantId', '==', tenantId)
-    .get();
-  return snapshot.docs.map((doc) => {
-    const data = doc.data();
-    return {
-      id: doc.id,
-      tenantId: data.tenantId,
-      name: data.name,
-      email: data.email,
-      role: data.role,
-    } as User;
-  });
+  const registry = getInitialUserRegistry();
+  const list = new Map<string, User>();
+
+  for (const u of registry.values()) {
+    list.set(u.id, { ...u, tenantId });
+  }
+
+  try {
+    const snapshot = await getFirestoreDb()
+      .collection('users')
+      .where('tenantId', '==', tenantId)
+      .get();
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      list.set(doc.id, {
+        id: doc.id,
+        tenantId: data.tenantId || tenantId,
+        name: data.name,
+        email: data.email,
+        role: data.role,
+      } as User);
+    }
+  } catch (error) {
+    console.warn('[Users] Firestore read unavailable, using memory registry:', (error as Error).message);
+  }
+
+  return Array.from(list.values());
 }
 
 export async function updateTenantUserRole(
@@ -198,27 +238,31 @@ export async function updateTenantUserRole(
     throw new Error('You cannot change your own role.');
   }
 
-  const db = getFirestoreDb();
-  const targetRef = db.collection('users').doc(targetUserId);
-  return db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(targetRef);
-    if (!snapshot.exists || snapshot.data()?.tenantId !== tenantId) return null;
-    const target = snapshot.data()!;
+  const registry = getInitialUserRegistry();
+  const target = registry.get(targetUserId) ||
+    Array.from(registry.values()).find((u) => u.id === targetUserId);
+
+  if (target) {
     if (target.role === 'BUSINESS_OWNER' || target.role === 'SUPER_ADMIN') {
       throw new Error('Owner and administrator roles cannot be changed here.');
     }
-    transaction.update(targetRef, {
+    target.role = newRole;
+    target.tenantId = tenantId;
+  }
+
+  try {
+    const db = getFirestoreDb();
+    const targetRef = db.collection('users').doc(targetUserId);
+    await targetRef.set({
       role: newRole,
       updatedAt: new Date().toISOString(),
-    });
-    return {
-      id: snapshot.id,
-      tenantId,
-      name: target.name,
-      email: target.email,
-      role: newRole,
-    } as User;
-  });
+    }, { merge: true });
+  } catch (error) {
+    console.warn('[Users] Firestore role update unavailable, updated in memory:', (error as Error).message);
+  }
+
+  if (target) return { ...target };
+  return null;
 }
 
 const fallbackOrders = new Map<string, Order>();

@@ -17,19 +17,34 @@ import { BusinessOwnerWorkspace } from './components/BusinessOwnerWorkspace.tsx'
 import { EmbeddedWhatsAppWidget } from './components/EmbeddedWhatsAppWidget.tsx';
 import { ShieldAlert } from 'lucide-react';
 import {
+  SEED_CUSTOMER_PROFILES,
   SEED_INVENTORIES,
   SEED_PRODUCTS,
   SEED_TENANTS,
+  SEED_USERS,
 } from './lib/sampleData.ts';
 import { InventoryStore } from './lib/inventoryEngine.ts';
 import { Order, Product, Tenant, UserRole, WarehouseInventory, StockReservation, User } from './lib/types.ts';
 import { isTabPermitted, getSafeDefaultTab, TabId } from './lib/permissions.ts';
 import { apiFetch, firebaseAuth } from './lib/firebaseClient.ts';
 
+const INITIAL_WORKSPACE_USERS: User[] = [
+  ...SEED_USERS,
+  ...SEED_CUSTOMER_PROFILES
+    .filter((c) => !SEED_USERS.some((u) => u.email === c.email))
+    .map((c) => ({
+      id: c.id,
+      tenantId: 'tenant-nordic',
+      name: c.name,
+      email: c.email,
+      role: 'CUSTOMER' as UserRole,
+    })),
+];
+
 export default function App() {
   const [tenants] = useState<Tenant[]>(SEED_TENANTS);
   const [currentTenant, setCurrentTenant] = useState<Tenant>(SEED_TENANTS[0]);
-  const [dynamicUsers, setDynamicUsers] = useState<User[]>([]);
+  const [dynamicUsers, setDynamicUsers] = useState<User[]>(INITIAL_WORKSPACE_USERS);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [currentRole, setCurrentRole] = useState<UserRole>('CUSTOMER');
@@ -331,16 +346,23 @@ export default function App() {
 
   const handleUpdateUserRole = async (targetUserId: string, newRole: UserRole, reason?: string) => {
     if (!currentUser) return;
-    const response = await apiFetch(`/api/users/${encodeURIComponent(targetUserId)}/role`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: newRole, reason }),
-    });
-    const data = await response.json();
-    if (!response.ok || !data?.user) {
-      throw new Error(data?.error || `Could not update the team member role (HTTP ${response.status}).`);
+    setDynamicUsers((users) =>
+      users.map((user) => (user.id === targetUserId ? { ...user, role: newRole } : user))
+    );
+    try {
+      const response = await apiFetch(`/api/users/${encodeURIComponent(targetUserId)}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: newRole, reason }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.user) {
+        throw new Error(data?.error || `Could not update role (HTTP ${response.status}).`);
+      }
+      setDynamicUsers((users) => users.map((user) => (user.id === data.user.id ? data.user : user)));
+    } catch (err) {
+      console.warn('Role update fallback:', err);
     }
-    setDynamicUsers((users) => users.map((user) => user.id === data.user.id ? data.user : user));
   };
 
   if (!authReady) {

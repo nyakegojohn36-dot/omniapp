@@ -1380,7 +1380,7 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {users
-                        .filter((u) => u.role === 'CUSTOMER' || !['usr-admin-1'].includes(u.id))
+                        .filter((u) => u.role === 'CUSTOMER' || (u.id !== currentUser?.id && u.email !== currentUser?.email && u.role !== 'BUSINESS_OWNER'))
                         .map((u) => {
                           const isCustomer = u.role === 'CUSTOMER';
                           return (
