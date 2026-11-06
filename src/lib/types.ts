@@ -21,8 +21,6 @@ export interface Tenant {
   taxRatePercent: number;
   taxInclusive: boolean;
   reservationTTLMinutes: number;
-  plan: 'STARTER' | 'GROWTH' | 'ENTERPRISE';
-  aiBudgetRemaining: number;
   channels: ('WEB' | 'WHATSAPP' | 'SHOPIFY_SYNC' | 'MARKETPLACE')[];
 }
 

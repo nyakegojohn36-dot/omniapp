@@ -19,7 +19,6 @@ import type { Tenant } from './types.ts';
 const TENANTS = 'tenants';
 const DEFAULT_CACHE_TTL_MS = 60_000;
 
-export const TENANT_PLANS: Tenant['plan'][] = ['STARTER', 'GROWTH', 'ENTERPRISE'];
 export const TENANT_CHANNELS: Tenant['channels'][number][] = [
   'WEB',
   'WHATSAPP',
@@ -121,14 +120,6 @@ function readChannels(value: unknown, fallback: Tenant['channels']): Tenant['cha
   return unique;
 }
 
-function readPlan(value: unknown, fallback: Tenant['plan']): Tenant['plan'] {
-  if (value === undefined) return fallback;
-  if (!TENANT_PLANS.includes(value as Tenant['plan'])) {
-    throw new TenantValidationError('plan', `plan must be one of: ${TENANT_PLANS.join(', ')}.`);
-  }
-  return value as Tenant['plan'];
-}
-
 const TENANT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
 /**
@@ -183,14 +174,6 @@ export function normalizeTenant(input: unknown, existing?: Tenant): Tenant {
       existing?.reservationTTLMinutes ?? 15,
       true
     ),
-    plan: readPlan(raw.plan, existing?.plan ?? 'STARTER'),
-    aiBudgetRemaining: readNumberInRange(
-      raw.aiBudgetRemaining ?? existing?.aiBudgetRemaining,
-      'aiBudgetRemaining',
-      0,
-      Number.MAX_SAFE_INTEGER,
-      existing?.aiBudgetRemaining ?? 0
-    ),
     channels: readChannels(raw.channels, existing?.channels ?? ['WEB', 'WHATSAPP']),
   };
 }
@@ -207,8 +190,6 @@ function toDocument(tenant: Tenant): Record<string, unknown> {
     taxRatePercent: tenant.taxRatePercent,
     taxInclusive: tenant.taxInclusive,
     reservationTTLMinutes: tenant.reservationTTLMinutes,
-    plan: tenant.plan,
-    aiBudgetRemaining: tenant.aiBudgetRemaining,
     channels: tenant.channels,
   };
 }

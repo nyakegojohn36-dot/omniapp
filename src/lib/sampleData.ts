@@ -16,8 +16,6 @@ export const SEED_TENANTS: Tenant[] = [
     taxRatePercent: 16.0,
     taxInclusive: true,
     reservationTTLMinutes: 15,
-    plan: 'ENTERPRISE',
-    aiBudgetRemaining: 94.20,
     channels: ['WEB', 'WHATSAPP', 'SHOPIFY_SYNC', 'MARKETPLACE'],
   },
   {
@@ -30,8 +28,6 @@ export const SEED_TENANTS: Tenant[] = [
     taxRatePercent: 16.0,
     taxInclusive: true,
     reservationTTLMinutes: 20,
-    plan: 'GROWTH',
-    aiBudgetRemaining: 48.00,
     channels: ['WEB', 'WHATSAPP'],
   },
 ];

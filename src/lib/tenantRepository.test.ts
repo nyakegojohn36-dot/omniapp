@@ -29,8 +29,6 @@ function tenant(id: string, overrides: Partial<Tenant> = {}): Tenant {
     taxRatePercent: 16,
     taxInclusive: true,
     reservationTTLMinutes: 15,
-    plan: 'GROWTH',
-    aiBudgetRemaining: 250,
     channels: ['WEB', 'WHATSAPP'],
     ...overrides,
   };
@@ -60,13 +58,13 @@ function runContract(label: string, create: () => TenantRepository, uniqueId: ()
   test(`${label}: a partial update keeps untouched settings`, async () => {
     const repo = create();
     const id = uniqueId();
-    await repo.create(tenant(id, { reservationTTLMinutes: 15, plan: 'STARTER' }));
+    await repo.create(tenant(id, { reservationTTLMinutes: 15 }));
 
     const updated = await repo.update(id, { name: 'Renamed Workspace' });
 
     assert.equal(updated.name, 'Renamed Workspace');
     assert.equal(updated.reservationTTLMinutes, 15);
-    assert.equal(updated.plan, 'STARTER');
+    assert.equal(updated.currency, 'KES');
     assert.equal(updated.id, id);
   });
 
@@ -136,7 +134,6 @@ test('tenants: a minimal payload resolves to safe Kenyan defaults', () => {
   assert.equal(resolved.locale, 'en-KE');
   assert.equal(resolved.timezone, 'Africa/Nairobi');
   assert.equal(resolved.reservationTTLMinutes, 15);
-  assert.equal(resolved.plan, 'STARTER');
   assert.equal(resolved.taxInclusive, true);
   assert.deepEqual(resolved.channels, ['WEB', 'WHATSAPP']);
   assert.equal(resolved.slug, 'tenant-new');

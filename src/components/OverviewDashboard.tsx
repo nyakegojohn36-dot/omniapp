@@ -42,7 +42,7 @@ interface OverviewDashboardProps {
   onSweepExpired: () => void;
 }
 
-type SubSection = 'overview' | 'customers' | 'integrations' | 'team' | 'billing' | 'settings';
+type SubSection = 'overview' | 'customers' | 'integrations' | 'team' | 'settings';
 
 export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   tenant,
@@ -221,18 +221,6 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         >
           <Shield className="w-3.5 h-3.5" />
           <span>Team & RBAC Permissions</span>
-        </button>
-
-        <button
-          onClick={() => setActiveSection('billing')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg whitespace-nowrap transition-colors ${
-            activeSection === 'billing'
-              ? 'bg-slate-900 text-white font-semibold'
-              : 'hover:bg-slate-100 text-slate-700'
-          }`}
-        >
-          <CreditCard className="w-3.5 h-3.5" />
-          <span>Plan & AI Budget</span>
         </button>
 
         <button
@@ -677,68 +665,6 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                   ))}
                 </tbody>
               </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 5: BILLING & AI USAGE */}
-      {activeSection === 'billing' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                Current Plan
-              </span>
-              <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold">
-                Active
-              </span>
-            </div>
-
-            <div>
-              <h3 className="text-xl font-bold text-slate-900">Growth Plan &mdash; $199/month</h3>
-              <p className="text-xs text-slate-500 mt-1">
-                Unlimited sales channels, 15ms atomic stock locking, and 100,000 monthly orders.
-              </p>
-            </div>
-
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600">AI Grounded Budget Remaining</span>
-                <span className="font-mono font-bold text-slate-900">${tenant.aiBudgetRemaining.toFixed(2)} / $150.00</span>
-              </div>
-              <div className="w-full bg-slate-200 rounded-full h-2">
-                <div
-                  className="bg-purple-600 h-2 rounded-full"
-                  style={{ width: `${(tenant.aiBudgetRemaining / 150) * 100}%` }}
-                ></div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3">
-            <h3 className="text-sm font-bold text-slate-900">Recent Invoices</h3>
-            <div className="divide-y divide-slate-100 text-xs">
-              <div className="py-2.5 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-slate-900">Invoice #INV-2026-10</div>
-                  <div className="text-[11px] text-slate-400">Oct 01, 2026 · Visa ****4242</div>
-                </div>
-                <div className="text-right">
-                  <span className="font-mono font-bold text-slate-900">$199.00</span>
-                  <div className="text-[10px] text-emerald-600 font-bold">Paid</div>
-                </div>
-              </div>
-              <div className="py-2.5 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-slate-900">Invoice #INV-2026-09</div>
-                  <div className="text-[11px] text-slate-400">Sep 01, 2026 · Visa ****4242</div>
-                </div>
-                <div className="text-right">
-                  <span className="font-mono font-bold text-slate-900">$199.00</span>
-                  <div className="text-[10px] text-emerald-600 font-bold">Paid</div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
