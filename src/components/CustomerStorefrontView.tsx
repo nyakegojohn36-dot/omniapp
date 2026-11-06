@@ -6,7 +6,6 @@ import {
   AlertCircle,
   Clock,
   ArrowRight,
-  ShieldCheck,
   CreditCard,
   Truck,
   Trash2,
@@ -430,7 +429,11 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
     void submitIntake().then(() => setStkState('idle'));
   };
 
-  // AI Concierge Chat Handler - Grounded in Kenya
+  /**
+   * Keyword replies, not a model. Every number here has to come from the tenant
+   * record or the pricing engine: an assistant that invents a paybill number is
+   * worse than one that says nothing.
+   */
   const handleSendAiMessage = () => {
     const text = aiChatInput.trim();
     if (!text) return;
@@ -446,7 +449,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
           ...prev,
           {
             sender: 'AI',
-            text: `We deliver across Nairobi (Westlands, Kilimani, Karen, Upper Hill, CBD) same-day via Sendy/Boda courier in 2-4 hours for KSh 300. Upcountry orders (Mombasa, Kisumu, Nakuru, Eldoret) are dispatched via Fargo/G4S within 24 hours for KSh 500. Orders over KSh 10,000 qualify for FREE delivery!`,
+            text: `We deliver across Kenya. Nairobi orders go out the same day; the rest of the country is dispatched within 24 hours. Delivery is ${formatCurrency(30000, tenant.currency)} inside Kenya and free above ${formatCurrency(freeShippingThresholdCents, tenant.currency)} - the exact fee always appears at checkout before you pay.`,
           },
         ]);
       } else if (lower.includes('mpesa') || lower.includes('m-pesa') || lower.includes('pay') || lower.includes('payment') || lower.includes('till')) {
@@ -454,7 +457,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
           ...prev,
           {
             sender: 'AI',
-            text: `We support instant Lipa na M-PESA STK Push (prompt sent directly to your phone), M-PESA Paybill 247247 (Acc: SafariPeak), Buy Goods Till 542910, Airtel Money Kenya, Pesalink bank transfers, or Cash/M-PESA on Delivery with our Boda riders.`,
+            text: `Lipa na M-PESA is the one that settles by itself: we send the STK prompt to your phone and the order confirms when Safaricom reports the payment. Cash on delivery also works. Card, Airtel Money and bank transfer are listed at checkout, but nothing is charged online - the order waits as unpaid until the money is verified.`,
           },
         ]);
       } else if (lower.includes('etims') || lower.includes('vat') || lower.includes('tax') || lower.includes('kra')) {
@@ -462,7 +465,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
           ...prev,
           {
             sender: 'AI',
-            text: `All prices include 16% standard KRA VAT. Every order automatically receives an official KRA eTIMS fiscal electronic receipt with verifiable QR code.`,
+            text: `Prices for this shop are ${tenant.taxInclusive ? 'inclusive of' : 'plus'} ${tenant.taxRatePercent}% VAT, and the tax line is broken out on the order summary. A printable invoice is available from your order history.`,
           },
         ]);
       } else if (lower.includes('jacket') || lower.includes('alpine') || lower.includes('cold') || lower.includes('parka')) {
@@ -879,7 +882,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                       that decision. This renders nothing for any other status. */}
                   <ReturnRequestAction tenant={tenant} order={ord} />
 
-                  {/* Carrier & M-PESA / eTIMS Fiscal Info */}
+                  {/* Carrier & M-PESA reference */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
                     <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
                       <div className="flex items-center gap-1.5 text-slate-600">
@@ -901,14 +904,14 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                         )}
                         {ord.etimsInvoiceNumber && (
                           <div className="text-slate-700 text-[11px] font-semibold">
-                            <span>KRA eTIMS:</span> {ord.etimsInvoiceNumber}
+                            <span>Invoice ref:</span> {ord.etimsInvoiceNumber}
                           </div>
                         )}
                       </div>
                     )}
                   </div>
 
-                  {/* KRA eTIMS Tax Invoice & Action */}
+                  {/* Printable invoice (a shop document, not a fiscal receipt) */}
                   <div className="flex items-center justify-between pt-1">
                     <button
                       type="button"
@@ -916,10 +919,10 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200 transition-colors cursor-pointer"
                     >
                       <FileText className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>View eTIMS Tax Invoice</span>
+                      <span>View Invoice</span>
                     </button>
                     <span className="text-[11px] text-slate-400 font-mono">
-                      VAT 16% Compliant
+                      VAT {tenant.taxRatePercent}% {tenant.taxInclusive ? 'included' : 'added'}
                     </span>
                   </div>
 
@@ -1520,20 +1523,21 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                     onClick={() => setCheckoutStep(3)}
                     className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-1.5 hover:bg-slate-800"
                   >
-                    <span>Review Order & eTIMS</span>
+                    <span>Review Order</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Step 3: Review & Place Order - KRA eTIMS & M-PESA STK Flow */}
+            {/* Step 3: Review & Place Order */}
             {checkoutStep === 3 && (
               <div className="space-y-4 text-xs">
                 <div>
-                  <h3 className="font-bold text-sm text-slate-900">Final Order Review & KRA eTIMS</h3>
+                  <h3 className="font-bold text-sm text-slate-900">Final Order Review</h3>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Authorized orders are registered with the Kenya Revenue Authority eTIMS system.
+                    The server prices this from the catalogue. Your total is fixed once the order is
+                    placed.
                   </p>
                 </div>
 
@@ -1549,15 +1553,17 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                     </div>
                   )}
                   <div className="flex justify-between text-slate-500 text-[11px]">
-                    <span>16% KRA VAT (eTIMS Included):</span>
+                    <span>
+                      VAT ({tenant.taxRatePercent}% {tenant.taxInclusive ? 'included' : 'added'}):
+                    </span>
                     <span>{formatLocalPrice(pricingSummary.taxCents)}</span>
                   </div>
                   <div className="flex justify-between text-slate-600">
-                    <span>Shipping Carrier:</span>
+                    <span>Delivery:</span>
                     <span className="font-sans font-semibold text-slate-800">
                       {shippingAddress.city.toLowerCase().includes('nairobi')
-                        ? 'Sendy / Nairobi Boda Courier'
-                        : 'Fargo Courier Kenya'}
+                        ? 'Same-day courier in Nairobi'
+                        : 'Courier, 24 hours'}
                     </span>
                   </div>
                   <div className="flex justify-between text-slate-600">
@@ -1569,16 +1575,19 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                     </span>
                   </div>
                   <div className="flex justify-between text-base font-bold text-slate-900 pt-2 border-t border-slate-200">
-                    <span>Total Amount (KES):</span>
+                    <span>Total Amount ({tenant.currency}):</span>
                     <span>{formatLocalPrice(pricingSummary.totalCents)}</span>
                   </div>
                 </div>
 
-                {/* KRA eTIMS Compliance Notice */}
-                <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl flex items-start gap-2.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                  <div className="text-[11px] text-emerald-900 leading-relaxed">
-                    <span className="font-bold">KRA eTIMS Tax Compliance:</span> A sequential electronic tax invoice serial (e.g. <span className="font-mono font-semibold">eTIMS-2026-NBI-XXXXX</span>) with tax verification details will be attached to your official receipt.
+                {/* Invoice notice. No fiscal-device claim: the document is an
+                    order invoice, not a KRA eTIMS receipt. */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-start gap-2.5">
+                  <FileText className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                  <div className="text-[11px] text-slate-700 leading-relaxed">
+                    <span className="font-bold">Invoice:</span> a printable invoice is generated
+                    from this order and stays available in your order history. It is a shop
+                    document and is not filed with KRA eTIMS.
                   </div>
                 </div>
 
@@ -1847,7 +1856,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
         )}
       </div>
 
-      {/* OFFICIAL KRA eTIMS TAX INVOICE MODAL */}
+      {/* PRINTABLE INVOICE MODAL */}
       {invoiceModalOrder && (
         <KraTaxInvoiceModal
           order={invoiceModalOrder}

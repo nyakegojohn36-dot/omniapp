@@ -825,7 +825,7 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
                 >
                   <span className="flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>View KRA eTIMS Tax Invoice</span>
+                    <span>View Invoice</span>
                   </span>
                   <ChevronRight className="w-3 h-3 text-emerald-600" />
                 </button>
@@ -956,7 +956,7 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
         </div>
       </div>
 
-      {/* Official KRA eTIMS Tax Invoice Modal */}
+      {/* Printable invoice modal */}
       {showInvoiceModal && matchingOrder && (
         <KraTaxInvoiceModal
           order={matchingOrder}

@@ -319,6 +319,64 @@ function startReservationSweeper(scopedTenantId: string): NodeJS.Timeout | null 
   return handle;
 }
 
+/**
+ * Coarse request throttle.
+ *
+ * Deliberately mounted before authentication: verifying a Firebase ID token is a
+ * network round trip, so the unauthenticated path is the expensive one to flood.
+ * That also means the counter can only be keyed by address, not by user - staff
+ * sharing one office NAT share a bucket, which is why the default is generous.
+ *
+ * This is not a distributed limiter: each instance keeps its own counters, so it
+ * bounds one client's burst rather than guaranteeing a global rate. Put a real
+ * limiter in front of the service if you need that guarantee.
+ */
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) > 0
+  ? Number(process.env.RATE_LIMIT_WINDOW_MS)
+  : 60_000;
+const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS) > 0
+  ? Number(process.env.RATE_LIMIT_MAX_REQUESTS)
+  : 600;
+
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+
+const rateLimitSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateLimitBuckets) {
+    if (bucket.resetAt <= now) rateLimitBuckets.delete(key);
+  }
+}, RATE_LIMIT_WINDOW_MS);
+rateLimitSweeper.unref();
+
+app.use('/api', (req: Request, res: Response, next) => {
+  // Safaricom retries a callback until it gets an answer. Throttling it would
+  // turn a rate limiter into a payment delay, and the settlement path is already
+  // idempotent.
+  if (req.path.toLowerCase() === '/payments/mpesa/callback' && req.method === 'POST') {
+    next();
+    return;
+  }
+
+  const key = req.ip || 'unknown';
+  const now = Date.now();
+  const bucket = rateLimitBuckets.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    next();
+    return;
+  }
+
+  bucket.count += 1;
+  if (bucket.count > RATE_LIMIT_MAX_REQUESTS) {
+    res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+    res.status(429).json({ error: 'Too many requests. Please slow down and retry shortly.' });
+    return;
+  }
+
+  next();
+});
+
 app.use('/api', (req: Request, res: Response, next) => {
   const requestPath = req.path.toLowerCase();
   const publicWebhook =
