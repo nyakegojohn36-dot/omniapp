@@ -39,7 +39,7 @@ import {
   SEED_TENANTS,
 } from './src/lib/sampleData.ts';
 import { availabilityBySku, type AdjustStockCommand } from './src/lib/commerceState.ts';
-import type { Order, OrderStatus, Product, Tenant, WarehouseInventory } from './src/lib/types.ts';
+import type { Order, OrderAddress, OrderStatus, Product, Tenant, WarehouseInventory } from './src/lib/types.ts';
 import {
   authenticateRequest,
   claimWebhookMessage,
@@ -146,6 +146,92 @@ if (!mpesaConfig) {
   );
 } else if (mpesaConfig.environment === 'sandbox') {
   console.info('[M-Pesa] Daraja client in sandbox mode.');
+}
+
+/**
+ * The parcel is still ours to redirect only until it is handed to a courier.
+ * Editing a delivery address after dispatch would point the goods somewhere the
+ * courier never agreed to take them.
+ */
+const ADDRESS_EDITABLE_STATUSES: OrderStatus[] = [
+  'DRAFT',
+  'AWAITING_PAYMENT',
+  'CONFIRMED',
+  'PROCESSING',
+];
+
+/**
+ * Merges an address patch onto the one on file. Every required field must still
+ * be present afterwards: a half-applied delivery address is worse than a refused
+ * edit, because the courier would be sent somewhere that does not exist.
+ */
+function normalizeAddressPatch(
+  input: unknown,
+  existing: OrderAddress
+): { ok: true; value: OrderAddress } | { ok: false; error: string } {
+  if (typeof input !== 'object' || input === null) {
+    return { ok: false, error: 'shippingAddress must be an object.' };
+  }
+
+  const raw = input as Record<string, unknown>;
+  const addressKeys: (keyof OrderAddress)[] = [
+    'fullName',
+    'addressLine1',
+    'addressLine2',
+    'city',
+    'stateOrProvince',
+    'postalCode',
+    'countryCode',
+    'phone',
+  ];
+
+  const merged: Record<string, string> = {};
+  for (const key of addressKeys) {
+    const incoming = raw[key];
+    if (incoming === undefined) {
+      merged[key] = existing[key] ?? '';
+      continue;
+    }
+    if (typeof incoming !== 'string') {
+      return { ok: false, error: `shippingAddress.${key} must be a string.` };
+    }
+    merged[key] = incoming.trim();
+  }
+
+  for (const required of [
+    'fullName',
+    'addressLine1',
+    'city',
+    'postalCode',
+    'countryCode',
+    'phone',
+  ] as const) {
+    if (!merged[required]) {
+      return { ok: false, error: `shippingAddress.${required} cannot be empty.` };
+    }
+  }
+
+  const countryCode = merged.countryCode.toUpperCase();
+  if (!/^[A-Z]{2}$/.test(countryCode)) {
+    return {
+      ok: false,
+      error: 'shippingAddress.countryCode must be a two-letter ISO code, e.g. KE.',
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      fullName: merged.fullName,
+      addressLine1: merged.addressLine1,
+      ...(merged.addressLine2 ? { addressLine2: merged.addressLine2 } : {}),
+      city: merged.city,
+      ...(merged.stateOrProvince ? { stateOrProvince: merged.stateOrProvince } : {}),
+      postalCode: merged.postalCode,
+      countryCode,
+      phone: merged.phone,
+    } satisfies OrderAddress,
+  };
 }
 
 /**
@@ -965,6 +1051,38 @@ app.put(
         return;
       }
       updatedOrder = transition.order;
+    }
+
+    // The delivery address belongs to the customer, not the courier. Support may
+    // correct it while the parcel is still ours to redirect, but not after.
+    if (body.shippingAddress !== undefined) {
+      if (!ADDRESS_EDITABLE_STATUSES.includes(updatedOrder.status)) {
+        res.status(409).json({
+          error: `Order ${updatedOrder.id} is ${updatedOrder.status}; the delivery address can no longer be changed.`,
+        });
+        return;
+      }
+      const address = normalizeAddressPatch(body.shippingAddress, updatedOrder.shippingAddress);
+      if (!address.ok) {
+        res.status(400).json({ error: address.error });
+        return;
+      }
+      updatedOrder = {
+        ...updatedOrder,
+        shippingAddress: address.value,
+        auditTrail: [
+          ...updatedOrder.auditTrail,
+          {
+            id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            fromStatus: updatedOrder.status,
+            toStatus: updatedOrder.status,
+            actor: user.email,
+            actorRole: user.role,
+            reason: 'Delivery address amended before dispatch.',
+          },
+        ],
+      };
     }
 
     // Shipment fields are free text, not part of the state machine.

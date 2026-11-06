@@ -98,6 +98,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [checkoutStep, setCheckoutStep] = useState<1 | 2 | 3>(1);
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
+  const [isConfirmingPayment, setIsConfirmingPayment] = useState<boolean>(false);
   const [invoiceModalOrder, setInvoiceModalOrder] = useState<Order | null>(null);
 
   // Safaricom M-PESA STK Push Simulation State
@@ -265,6 +266,69 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   );
   const amountNeededForFreeShippingCents = Math.max(0, freeShippingThresholdCents - pricingSummary.subtotalCents);
 
+  /**
+   * Waits for Safaricom's callback to land. The receipt number only ever comes
+   * from the server, which only learns it from Daraja.
+   */
+  const pollSettlement = async (orderId: string): Promise<Order | null> => {
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2400));
+      try {
+        const response = await apiFetch('/api/orders');
+        if (!response.ok) continue;
+        const data = await response.json();
+        const latest = (data.orders as Order[] | undefined)?.find((o) => o.id === orderId);
+        if (!latest) continue;
+        if (latest.isPaid) return latest;
+        if (latest.status === 'PAYMENT_FAILED' || latest.status === 'EXCEPTION_REVIEW') return latest;
+      } catch {
+        // A dropped poll is not a failed payment; keep waiting.
+      }
+    }
+    return null;
+  };
+
+  /**
+   * Asking Safaricom to prompt again. An unpaid order keeps its stock
+   * reservation until it expires, so a second attempt resumes the same order
+   * rather than creating a duplicate one.
+   */
+  const handleResendStkPush = async () => {
+    if (!confirmedOrder || isConfirmingPayment) return;
+    setIsConfirmingPayment(true);
+    setOrderError(null);
+    try {
+      const response = await apiFetch(`/api/orders/${confirmedOrder.id}/mpesa/stk-push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: confirmedOrder.mpesaPhoneNumber || mpesaPhone }),
+      });
+      const data = await response.json().catch(() => ({} as Record<string, unknown>));
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.error === 'string'
+            ? data.error
+            : `The M-Pesa prompt could not be sent (HTTP ${response.status}).`
+        );
+      }
+
+      const settled = await pollSettlement(confirmedOrder.id);
+      if (settled?.isPaid) {
+        setActiveReceiptCode(settled.mpesaReceiptCode ?? null);
+        setConfirmedOrder(settled);
+        setMyOrders((prev) => prev.map((o) => (o.id === settled.id ? settled : o)));
+      } else {
+        setOrderError(
+          'Still waiting for Safaricom to confirm. Your items stay reserved; the order confirms itself once the payment is reported.'
+        );
+      }
+    } catch (error) {
+      setOrderError(error instanceof Error ? error.message : 'Could not reach the payment service.');
+    } finally {
+      setIsConfirmingPayment(false);
+    }
+  };
+
   // Submit and Place Order. Payment is settled by Safaricom, never asserted here.
   const handlePlaceOrder = () => {
     setOrderError(null);
@@ -309,28 +373,6 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
         setOrderError(error instanceof Error ? error.message : 'Failed to place order.');
         return null;
       }
-    };
-
-    /**
-     * Waits for Safaricom's callback to land. The receipt number only ever comes
-     * from the server, which only learns it from Daraja.
-     */
-    const pollSettlement = async (orderId: string): Promise<Order | null> => {
-      for (let attempt = 0; attempt < 25; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 2400));
-        try {
-          const response = await apiFetch('/api/orders');
-          if (!response.ok) continue;
-          const data = await response.json();
-          const latest = (data.orders as Order[] | undefined)?.find((o) => o.id === orderId);
-          if (!latest) continue;
-          if (latest.isPaid) return latest;
-          if (latest.status === 'PAYMENT_FAILED' || latest.status === 'EXCEPTION_REVIEW') return latest;
-        } catch {
-          // A dropped poll is not a failed payment; keep waiting.
-        }
-      }
-      return null;
     };
 
     const collectWithStkPush = async () => {
@@ -1608,6 +1650,117 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ORDER CONFIRMATION — the receipt the customer leaves checkout with.
+          Without this the order number and the payment state were only visible
+          in the orders list, and an M-Pesa failure surfaced nowhere. */}
+      {confirmedOrder && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-fade-in">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div
+                  className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+                    confirmedOrder.isPaid ? 'bg-emerald-100' : 'bg-amber-100'
+                  }`}
+                >
+                  {confirmedOrder.isPaid ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-700" />
+                  ) : (
+                    <Clock className="w-5 h-5 text-amber-700" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900">
+                    {confirmedOrder.isPaid ? 'Payment received' : 'Order saved, awaiting payment'}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                    {confirmedOrder.isPaid
+                      ? `We collected ${formatCurrency(confirmedOrder.totalCents, confirmedOrder.currency)} and confirmed ${confirmedOrder.id}.`
+                      : `${confirmedOrder.id} holds its stock for ${tenant.reservationTTLMinutes} minutes while payment settles.`}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setConfirmedOrder(null)}
+                className="text-slate-400 hover:text-slate-600 shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 divide-y divide-slate-100 text-xs">
+              <div className="flex items-center justify-between px-3 py-2">
+                <span className="text-slate-500">Order</span>
+                <span className="font-mono font-bold text-slate-900">{confirmedOrder.id}</span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2">
+                <span className="text-slate-500">Status</span>
+                <span className="font-semibold text-slate-900">
+                  {confirmedOrder.status.replace(/_/g, ' ')}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2 gap-3">
+                <span className="text-slate-500 shrink-0">Delivering to</span>
+                <span className="text-slate-900 text-right">
+                  {confirmedOrder.shippingAddress.addressLine1}, {confirmedOrder.shippingAddress.city}
+                </span>
+              </div>
+              {confirmedOrder.mpesaReceiptCode && (
+                <div className="flex items-center justify-between px-3 py-2">
+                  <span className="text-slate-500">M-Pesa receipt</span>
+                  <span className="font-mono font-bold text-emerald-700">
+                    {confirmedOrder.mpesaReceiptCode}
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center justify-between px-3 py-2 bg-slate-50">
+                <span className="font-bold text-slate-700">Total</span>
+                <span className="font-mono font-bold text-slate-900">
+                  {formatCurrency(confirmedOrder.totalCents, confirmedOrder.currency)}
+                </span>
+              </div>
+            </div>
+
+            {orderError && (
+              <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
+                {orderError}
+              </p>
+            )}
+
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              {confirmedOrder.isPaid
+                ? 'Your items are reserved and the warehouse starts picking. Delivery updates go to the phone number on this order.'
+                : confirmedOrder.paymentMethod === 'CASH_ON_DELIVERY'
+                ? 'Pay the courier when the parcel arrives. The reservation is released if the goods cannot be handed over before it expires.'
+                : confirmedOrder.paymentMethod === 'BANK_TRANSFER'
+                ? 'Transfer the total and quote the order number. The order confirms once the money is verified by the business.'
+                : 'Approve the M-Pesa prompt on your phone. If it never arrived, send it again below.'}
+            </p>
+
+            <div className="flex items-center gap-2 pt-1">
+              {!confirmedOrder.isPaid &&
+                (confirmedOrder.paymentMethod === 'MPESA_PAYBILL' ||
+                  confirmedOrder.paymentMethod === 'MPESA_EXPRESS') && (
+                  <button
+                    onClick={handleResendStkPush}
+                    disabled={isConfirmingPayment}
+                    className="flex-1 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    {isConfirmingPayment ? 'Asking Safaricom…' : 'Send prompt again'}
+                  </button>
+                )}
+              <button
+                onClick={() => setConfirmedOrder(null)}
+                className="flex-1 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800"
+              >
+                Continue shopping
+              </button>
+            </div>
           </div>
         </div>
       )}

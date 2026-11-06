@@ -20,12 +20,35 @@ import {
   MapPin,
   FileText,
 } from 'lucide-react';
-import { CustomerProfile, Order, Product, SupportCase, Tenant, UserRole, WarehouseInventory } from '../lib/types.ts';
+import { CustomerProfile, Order, OrderAddress, Product, SupportCase, Tenant, UserRole, WarehouseInventory } from '../lib/types.ts';
 import { apiFetch } from '../lib/firebaseClient.ts';
 import { SEED_CUSTOMER_PROFILES, SEED_SUPPORT_CASES } from '../lib/sampleData.ts';
 import { formatCurrency } from '../lib/pricingEngine.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
 import { ReturnsPanel, ReturnRequestAction } from './ReturnsPanel.tsx';
+
+/**
+ * Mirrors ADDRESS_EDITABLE_STATUSES on the server. The server is still the
+ * authority; this only keeps the desk from offering a correction the API will
+ * refuse. Once a courier holds the parcel, the address is no longer ours.
+ */
+const ADDRESS_EDITABLE_STATUSES: Order['status'][] = [
+  'DRAFT',
+  'AWAITING_PAYMENT',
+  'CONFIRMED',
+  'PROCESSING',
+];
+
+const ADDRESS_FIELDS: { key: keyof OrderAddress; label: string; placeholder: string }[] = [
+  { key: 'fullName', label: 'Recipient', placeholder: 'Jane Wanjiru' },
+  { key: 'phone', label: 'Phone', placeholder: '+254 7xx xxx xxx' },
+  { key: 'addressLine1', label: 'Street', placeholder: 'Kimathi Street 12' },
+  { key: 'addressLine2', label: 'Apartment / floor', placeholder: 'Optional' },
+  { key: 'city', label: 'City', placeholder: 'Nairobi' },
+  { key: 'stateOrProvince', label: 'County', placeholder: 'Nairobi County' },
+  { key: 'postalCode', label: 'Postal code', placeholder: '00100' },
+  { key: 'countryCode', label: 'Country code', placeholder: 'KE' },
+];
 
 interface CustomerSupportWorkspaceViewProps {
   tenant: Tenant;
@@ -64,6 +87,17 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
 
   const [composerTab, setComposerTab] = useState<'REPLY' | 'INTERNAL_NOTE'>('REPLY');
   const [internalNoteText, setInternalNoteText] = useState<string>('');
+
+  // Address correction. This writes through PUT /api/orders/:id, which persists
+  // the change and adds an audit entry, so the desk is editing the real order.
+  const [addressEditorOpen, setAddressEditorOpen] = useState<boolean>(false);
+  const [addressDraft, setAddressDraft] = useState<OrderAddress | null>(null);
+  const [addressError, setAddressError] = useState<string | null>(null);
+  const [isSavingAddress, setIsSavingAddress] = useState<boolean>(false);
+
+  const addressEditable = matchingOrder
+    ? ADDRESS_EDITABLE_STATUSES.includes(matchingOrder.status)
+    : false;
 
   // 1. Sync live customer WhatsApp messages into the Support Inbox in real time
   useEffect(() => {
@@ -230,9 +264,54 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
     setReturnsRefresh((previous) => previous + 1);
   };
 
-  const handleAddressUpdateStaged = () => {
-    setActionNotice('Customer address modification staged for verification by Warehouse Fulfilment team.');
-    setTimeout(() => setActionNotice(null), 3500);
+  const closeAddressEditor = () => {
+    setAddressEditorOpen(false);
+    setAddressDraft(null);
+    setAddressError(null);
+  };
+
+  const toggleAddressEditor = () => {
+    if (addressEditorOpen) {
+      closeAddressEditor();
+      return;
+    }
+    if (!matchingOrder) return;
+    setAddressDraft({ ...matchingOrder.shippingAddress });
+    setAddressError(null);
+    setAddressEditorOpen(true);
+  };
+
+  const setAddressField = (key: keyof OrderAddress, value: string) => {
+    setAddressDraft((current) => (current ? { ...current, [key]: value } as OrderAddress : current));
+  };
+
+  const handleSaveAddress = async () => {
+    if (!matchingOrder || !addressDraft || isSavingAddress) return;
+    setIsSavingAddress(true);
+    setAddressError(null);
+    try {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(matchingOrder.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shippingAddress: addressDraft }),
+      });
+      const data = await response.json().catch(() => ({} as Record<string, unknown>));
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.error === 'string'
+            ? data.error
+            : `Saving the address failed (HTTP ${response.status}).`
+        );
+      }
+      if (data?.order) onUpdateOrder?.(data.order as Order);
+      closeAddressEditor();
+      setActionNotice(`Delivery address for ${matchingOrder.id} updated.`);
+      setTimeout(() => setActionNotice(null), 3500);
+    } catch (error) {
+      setAddressError(error instanceof Error ? error.message : 'Saving the address failed.');
+    } finally {
+      setIsSavingAddress(false);
+    }
   };
 
   return (
@@ -751,12 +830,62 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
                   <ChevronRight className="w-3 h-3 text-emerald-600" />
                 </button>
                 <button
-                  onClick={handleAddressUpdateStaged}
-                  className="w-full py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-md text-xs font-medium text-left flex items-center justify-between"
+                  onClick={toggleAddressEditor}
+                  disabled={!addressEditable}
+                  title={
+                    addressEditable
+                      ? 'Correct the delivery address while the parcel is still ours to redirect.'
+                      : `${matchingOrder.status} orders can no longer be redirected.`
+                  }
+                  className="w-full py-1.5 px-3 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-800 rounded-md text-xs font-medium text-left flex items-center justify-between"
                 >
-                  <span>Stage Address Modification</span>
-                  <ChevronRight className="w-3 h-3 text-slate-400" />
+                  <span>Correct Delivery Address</span>
+                  <ChevronRight
+                    className={`w-3 h-3 text-slate-400 transition-transform ${addressEditorOpen ? 'rotate-90' : ''}`}
+                  />
                 </button>
+
+                {addressEditorOpen && addressDraft && (
+                  <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-md space-y-1.5">
+                    {ADDRESS_FIELDS.map((field) => (
+                      <label key={field.key} className="block">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {field.label}
+                        </span>
+                        <input
+                          type="text"
+                          value={addressDraft[field.key] ?? ''}
+                          onChange={(event) => setAddressField(field.key, event.target.value)}
+                          placeholder={field.placeholder}
+                          className="w-full mt-0.5 px-2 py-1 bg-white border border-slate-200 rounded text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                      </label>
+                    ))}
+
+                    {addressError && (
+                      <p className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 leading-snug">
+                        {addressError}
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <button
+                        onClick={handleSaveAddress}
+                        disabled={isSavingAddress}
+                        className="flex-1 py-1.5 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-semibold"
+                      >
+                        {isSavingAddress ? 'Saving…' : 'Save Address'}
+                      </button>
+                      <button
+                        onClick={closeAddressEditor}
+                        disabled={isSavingAddress}
+                        className="px-2.5 py-1.5 rounded border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* A refund is not something an agent can press: the money leaves
