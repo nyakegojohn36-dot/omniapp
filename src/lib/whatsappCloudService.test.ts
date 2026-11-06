@@ -2,9 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { WhatsAppCloudService } from './whatsappCloudService.ts';
-import { InventoryStore } from './inventoryEngine.ts';
+import { InMemoryCommerceState, createConversationStockPort } from './commerceState.ts';
+import type { ConversationStockPort } from './commerceState.ts';
 import { SEED_INVENTORIES, SEED_ORDERS, SEED_PRODUCTS, SEED_TENANTS } from './sampleData.ts';
 import type { Order } from './types.ts';
+
+/**
+ * Mirrors the server wiring: a fresh availability snapshot per inbound message,
+ * reservations always delegated to the authoritative store.
+ */
+function warehouse(tenantId: string = SEED_TENANTS[0].id) {
+  const state = new InMemoryCommerceState({
+    tenantId,
+    inventory: SEED_INVENTORIES,
+    products: SEED_PRODUCTS,
+  });
+  const stock = async (): Promise<ConversationStockPort> =>
+    createConversationStockPort({
+      tenantId,
+      rows: await state.listInventory(tenantId),
+      reserve: (tenant, command) => state.reserve(tenant, command),
+    });
+  return { state, tenantId, stock };
+}
 
 test('WhatsApp Cloud Service: verifies Meta webhook handshake correctly', () => {
   const service = new WhatsAppCloudService({ verifyToken: 'test_token_123' });
@@ -51,8 +71,8 @@ test('WhatsApp Cloud Service: defaults to an unconnected simulated configuration
   assert.equal(config.hasAccessToken, false);
 });
 
-test('WhatsApp Cloud Service: completes full multi-step order placement journey via WhatsApp', () => {
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+test('WhatsApp Cloud Service: completes full multi-step order placement journey via WhatsApp', async () => {
+  const { state, tenantId, stock } = warehouse();
   const products = [...SEED_PRODUCTS];
   const orders: Order[] = [...SEED_ORDERS];
   let createdOrder: Order | null = null;
@@ -62,12 +82,12 @@ test('WhatsApp Cloud Service: completes full multi-step order placement journey 
   const name = 'David Miller';
 
   // Step 1: Customer asks to buy TSHIRT001
-  const step1 = service.processInboundMessage({
+  const step1 = await service.processInboundMessage({
     messageId: 'mid-step-1',
     fromNumber: phone,
     customerName: name,
     textBody: 'Hi, I want to buy 2 pairs of TSHIRT001',
-    inventoryEngine,
+    stock: await stock(),
     products,
     orders,
     tenant: SEED_TENANTS[0],
@@ -83,12 +103,12 @@ test('WhatsApp Cloud Service: completes full multi-step order placement journey 
   assert.equal(createdOrder, null);
 
   // Step 2: Customer provides shipping address
-  const step2 = service.processInboundMessage({
+  const step2 = await service.processInboundMessage({
     messageId: 'mid-step-2',
     fromNumber: phone,
     customerName: name,
     textBody: '450 Pine Road, Portland, 97201',
-    inventoryEngine,
+    stock: await stock(),
     products,
     orders,
     tenant: SEED_TENANTS[0],
@@ -104,15 +124,15 @@ test('WhatsApp Cloud Service: completes full multi-step order placement journey 
   assert.equal(createdOrder, null);
 
   // Initial stock before confirmation
-  const stockBefore = inventoryEngine.getAvailability('TSHIRT001');
+  const stockBefore = (await state.getAvailability(tenantId, 'TSHIRT001'));
 
   // Step 3: Customer confirms with "YES"
-  const step3 = service.processInboundMessage({
+  const step3 = await service.processInboundMessage({
     messageId: 'mid-step-3',
     fromNumber: phone,
     customerName: name,
     textBody: 'YES',
-    inventoryEngine,
+    stock: await stock(),
     products,
     orders,
     tenant: SEED_TENANTS[0],
@@ -136,39 +156,39 @@ test('WhatsApp Cloud Service: completes full multi-step order placement journey 
   assert.equal(ord.items[0].quantity, 2);
 
   // Check that stock was atomically reserved
-  const stockAfter = inventoryEngine.getAvailability('TSHIRT001');
+  const stockAfter = (await state.getAvailability(tenantId, 'TSHIRT001'));
   assert.equal(stockAfter.availableStock, stockBefore.availableStock - 2);
   assert.ok(ord.reservationId);
 });
 
-test('Authenticated web chat never sends Meta messages or creates WhatsApp orders', () => {
+test('Authenticated web chat never sends Meta messages or creates WhatsApp orders', async () => {
   const service = new WhatsAppCloudService({
     mode: 'LIVE_PRODUCTION',
     phoneNumberId: 'test-phone-id',
   });
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+  const { state, stock } = warehouse();
   const orders = [...SEED_ORDERS];
   const originalOrderCount = orders.length;
   const params = {
     fromNumber: 'web-user-123',
     customerName: 'Test User',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders,
     tenant: SEED_TENANTS[0],
   };
 
-  service.processWebChatMessage({
+  await service.processWebChatMessage({
     ...params,
     messageId: 'web-step-1',
     textBody: 'I want to buy 2 TSHIRT001',
   });
-  service.processWebChatMessage({
+  await service.processWebChatMessage({
     ...params,
     messageId: 'web-step-2',
     textBody: '450 Pine Road, Portland, 97201',
   });
-  const confirmation = service.processWebChatMessage({
+  const confirmation = await service.processWebChatMessage({
     ...params,
     messageId: 'web-step-3',
     textBody: 'YES',
@@ -180,16 +200,16 @@ test('Authenticated web chat never sends Meta messages or creates WhatsApp order
   assert.ok(service.getMessages().every((message) => message.sourceMode === 'SIMULATED_DEMO'));
 });
 
-test('WhatsApp Cloud Service: refuses to order out-of-stock item and suggests alternatives', () => {
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+test('WhatsApp Cloud Service: refuses to order out-of-stock item and suggests alternatives', async () => {
+  const { state, stock } = warehouse();
   const service = new WhatsAppCloudService();
 
-  const res = service.processInboundMessage({
+  const res = await service.processInboundMessage({
     messageId: 'mid-oos-1',
     fromNumber: '+1 (555) 777-8888',
     customerName: 'Alex Test',
     textBody: 'I want to order FLASK-VAC-750',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -199,28 +219,28 @@ test('WhatsApp Cloud Service: refuses to order out-of-stock item and suggests al
   assert.ok(res.responseText.includes('TSHIRT001'));
 });
 
-test('WhatsApp Cloud Service: enforces idempotency on duplicate webhook message IDs', () => {
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+test('WhatsApp Cloud Service: enforces idempotency on duplicate webhook message IDs', async () => {
+  const { state, stock } = warehouse();
   const service = new WhatsAppCloudService();
 
-  const first = service.processInboundMessage({
+  const first = await service.processInboundMessage({
     messageId: 'wamid-dup-test-01',
     fromNumber: '+1 (555) 111-2222',
     customerName: 'First Run',
     textBody: 'Do you have TSHIRT001 in stock?',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
   });
   assert.ok(first.responseText.includes('Merino Wool Trail Crewneck T-Shirt'));
 
-  const second = service.processInboundMessage({
+  const second = await service.processInboundMessage({
     messageId: 'wamid-dup-test-01', // duplicate ID!
     fromNumber: '+1 (555) 111-2222',
     customerName: 'First Run',
     textBody: 'Do you have TSHIRT001 in stock?',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -228,18 +248,18 @@ test('WhatsApp Cloud Service: enforces idempotency on duplicate webhook message 
   assert.equal(second.responseText, 'This request was already processed.');
 });
 
-test('WhatsApp Cloud Service: pauses AI replies during human support takeover', () => {
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+test('WhatsApp Cloud Service: pauses AI replies during human support takeover', async () => {
+  const { state, stock } = warehouse();
   const service = new WhatsAppCloudService();
   const phone = '+1 (555) 444-5555';
 
   // Customer asks for human
-  const escalation = service.processInboundMessage({
+  const escalation = await service.processInboundMessage({
     messageId: 'wamid-human-1',
     fromNumber: phone,
     customerName: 'Emma Watson',
     textBody: 'I want to speak with an agent',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -249,12 +269,12 @@ test('WhatsApp Cloud Service: pauses AI replies during human support takeover', 
   assert.ok(escalation.responseText.includes('connected to our human support team'));
 
   // Subsequent message from customer should have AI paused
-  const followup = service.processInboundMessage({
+  const followup = await service.processInboundMessage({
     messageId: 'wamid-human-2',
     fromNumber: phone,
     customerName: 'Emma Watson',
     textBody: 'My item arrived broken',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -264,12 +284,12 @@ test('WhatsApp Cloud Service: pauses AI replies during human support takeover', 
   assert.ok(followup.responseText.includes('Automated replies paused'));
 
   // Return to AI
-  const resume = service.processInboundMessage({
+  const resume = await service.processInboundMessage({
     messageId: 'wamid-human-3',
     fromNumber: phone,
     customerName: 'Emma Watson',
     textBody: 'RETURN TO AI',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -360,17 +380,17 @@ test('WhatsApp Cloud Service: centralized Graph API version defaults to v22.0 an
   assert.equal(service.getConfig().graphApiVersion, 'v26.0');
 });
 
-test('WhatsApp Cloud Service: strictly enforces customer privacy when tracking orders', () => {
+test('WhatsApp Cloud Service: strictly enforces customer privacy when tracking orders', async () => {
   const service = new WhatsAppCloudService();
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+  const { state, tenantId, stock } = warehouse();
 
   // Sarah Nekesa (phone +254 752 720933) tracks her own order ORD-000008
-  const authTrack = service.processInboundMessage({
+  const authTrack = await service.processInboundMessage({
     messageId: 'mid-track-auth',
     fromNumber: '+254 752 720933',
     customerName: 'Sarah Nekesa',
     textBody: 'TRACK ORD-000008',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -379,12 +399,12 @@ test('WhatsApp Cloud Service: strictly enforces customer privacy when tracking o
   assert.ok(authTrack.responseText.includes('Sarah Nekesa') || authTrack.responseText.includes('Safari Peak'));
 
   // Unauthorized stranger (+1 (555) 999-4321) tries to snoop on ORD-000008
-  const unauthTrack = service.processInboundMessage({
+  const unauthTrack = await service.processInboundMessage({
     messageId: 'mid-track-unauth',
     fromNumber: '+1 (555) 999-4321',
     customerName: 'Stranger',
     textBody: 'TRACK ORD-000008',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],
@@ -393,16 +413,16 @@ test('WhatsApp Cloud Service: strictly enforces customer privacy when tracking o
   assert.ok(unauthTrack.responseText.includes('disclosed to the verified purchasing phone number'));
 });
 
-test('WhatsApp Cloud Service: rejects WhatsApp chat claims and screenshots as payment verification', () => {
+test('WhatsApp Cloud Service: rejects WhatsApp chat claims and screenshots as payment verification', async () => {
   const service = new WhatsAppCloudService();
-  const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
+  const { state, stock } = warehouse();
 
-  const paymentClaim = service.processInboundMessage({
+  const paymentClaim = await service.processInboundMessage({
     messageId: 'mid-pay-claim',
     fromNumber: '+1 (555) 234-5678',
     customerName: 'Sarah Jenkins',
     textBody: 'I have paid, here is the payment screenshot receipt',
-    inventoryEngine,
+    stock: await stock(),
     products: SEED_PRODUCTS,
     orders: SEED_ORDERS,
     tenant: SEED_TENANTS[0],

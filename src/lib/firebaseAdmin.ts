@@ -332,6 +332,56 @@ export async function saveOrder(order: Order): Promise<void> {
   }
 }
 
+/**
+ * Highest order number already present in a list of "ORD-000123" style ids.
+ * Anchored on the trailing digit run so the year prefix cannot win.
+ */
+function highestOrderNumber(orderIds: string[]): number {
+  let highest = 0;
+  for (const id of orderIds) {
+    const match = id.match(/(\d+)$/);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value > highest) highest = value;
+  }
+  return highest;
+}
+
+/**
+ * Allocates the next order number for a tenant.
+ *
+ * Order ids are human-facing, so they must never be reused. The counter lives in
+ * Firestore and is incremented inside a transaction; on first use it is seeded
+ * above every order already stored for the tenant. Unlike the other helpers in
+ * this file it does not fall back to memory: a duplicate order number is worse
+ * than a refused checkout.
+ */
+export async function nextOrderSequence(tenantId: string): Promise<number> {
+  const db = getFirestoreDb();
+  const counterRef = db.collection('counters').doc(documentId(`${tenantId}:orderSequence`));
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(counterRef);
+    if (snapshot.exists) {
+      const next = Number(snapshot.data()?.value ?? 0) + 1;
+      transaction.update(counterRef, { value: next, updatedAt: new Date().toISOString() });
+      return next;
+    }
+
+    // First allocation: seed above the existing numbers so nothing collides.
+    const existing = await transaction.get(
+      db.collection('orders').where('tenantId', '==', tenantId)
+    );
+    const next = highestOrderNumber(existing.docs.map((doc) => String(doc.data().id ?? ''))) + 1;
+    transaction.create(counterRef, {
+      tenantId,
+      value: next,
+      updatedAt: new Date().toISOString(),
+    });
+    return next;
+  });
+}
+
 export async function listTenantMessages(tenantId: string): Promise<WhatsAppMessageRecord[]> {
   try {
     const snapshot = await getFirestoreDb()

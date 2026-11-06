@@ -21,13 +21,11 @@ import {
   AlertCircle,
   Headphones,
 } from 'lucide-react';
-import { InventoryStore } from '../lib/inventoryEngine.ts';
 import { Order, Product, Tenant, WhatsAppMessageRecord } from '../lib/types.ts';
 import { apiFetch } from '../lib/firebaseClient.ts';
 
 interface WhatsAppChannelViewProps {
   tenant: Tenant;
-  inventoryEngine: InventoryStore;
   products: Product[];
   orders: Order[];
   onOrderCreated?: (order: Order) => void;
@@ -47,7 +45,6 @@ interface CustomerConversation {
 
 export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
   tenant,
-  inventoryEngine,
   products,
   orders,
   onOrderCreated,

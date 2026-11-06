@@ -28,19 +28,16 @@ import {
   FileText,
   Printer,
 } from 'lucide-react';
-import { InventoryStore } from '../lib/inventoryEngine.ts';
-import { createCustomerOrder } from '../lib/orderService.ts';
+import { type AvailabilityReader } from '../lib/availabilitySource.ts';
 import { calculateOrderPricing, formatCurrency } from '../lib/pricingEngine.ts';
-import { Order, OrderAddress, PaymentMethod, Product, Tenant, User as AppUser, UserRole, WarehouseInventory } from '../lib/types.ts';
+import { Order, OrderAddress, PaymentMethod, Product, Tenant, User as AppUser, UserRole } from '../lib/types.ts';
 import { apiFetch } from '../lib/firebaseClient.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
 
 interface CustomerStorefrontViewProps {
   tenant: Tenant;
   products: Product[];
-  inventories: WarehouseInventory[];
-  inventoryEngine: InventoryStore;
-  existingOrdersCount: number;
+  availability: AvailabilityReader;
   orders: Order[];
   currentUser: AppUser;
   currentRole?: UserRole;
@@ -69,9 +66,7 @@ const CURRENCY_RATES: Record<string, { symbol: string; rate: number; label: stri
 export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   tenant,
   products,
-  inventories,
-  inventoryEngine,
-  existingOrdersCount,
+  availability,
   orders,
   currentUser,
   currentRole = 'CUSTOMER',
@@ -106,7 +101,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
 
   // Safaricom M-PESA STK Push Simulation State
   const [mpesaPhone, setMpesaPhone] = useState<string>('0752720933');
-  const [stkState, setStkState] = useState<'idle' | 'sending_prompt' | 'awaiting_pin' | 'authorized'>('idle');
+  const [stkState, setStkState] = useState<'idle' | 'sending_prompt' | 'awaiting_pin' | 'authorized' | 'submitting'>('idle');
   const [activeReceiptCode, setActiveReceiptCode] = useState<string | null>(null);
 
   // Countdown timer for cart hold TTL (15 minutes)
@@ -139,6 +134,10 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   // My Orders list
   const [myOrders, setMyOrders] = useState<Order[]>(orders);
   const [storeWhatsAppPhone, setStoreWhatsAppPhone] = useState<string>('254752720933');
+
+  // Availability is a rendering hint derived from the server's rows. A stale
+  // snapshot can only ever make us show fewer units, never sell more: the
+  // checkout below asks the server to reserve.
 
   useEffect(() => {
     apiFetch('/api/whatsapp/config')
@@ -193,7 +192,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
     const qty = quantities[product.id] || 1;
 
     // Check availability
-    const stock = inventoryEngine.getAvailability(chosenVariantSku);
+    const stock = availability.getAvailability(chosenVariantSku);
     if (stock.availableStock < qty) {
       if (stock.availableStock === 0) {
         setOrderError(`Sorry, ${product.title} (${chosenVariantSku}) is completely out of stock.`);
@@ -269,43 +268,45 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   const handlePlaceOrder = () => {
     setOrderError(null);
 
-    const highestOrderNum = Math.max(
-      8,
-      existingOrdersCount,
-      ...myOrders.map((o) => {
-        const num = parseInt(o.id.replace(/\D/g, ''), 10);
-        return isNaN(num) ? 0 : num;
-      })
-    );
+    // The browser states what it wants to buy, never what it costs or whether it
+    // is paid. The server prices from the catalogue and reserves atomically, so a
+    // tampered request can only be rejected, not honoured.
+    const submitIntake = async (receipt?: string) => {
+      setStkState('submitting');
+      try {
+        const response = await apiFetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: cart.map((item) => ({ sku: item.sku, quantity: item.quantity })),
+            customer: {
+              name: shippingAddress.fullName || currentUser.name,
+              email: currentUser.email,
+              phone: shippingAddress.phone || mpesaPhone,
+            },
+            shippingAddress,
+            paymentMethod,
+            discountCode: appliedDiscount,
+            mpesaPhoneNumber: mpesaPhone,
+            mpesaReceiptCode: receipt,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data?.order) {
+          throw new Error(data?.error || `Checkout failed (HTTP ${response.status}).`);
+        }
 
-    const proceedWithCreation = (prepaid: boolean, receipt?: string) => {
-      const result = createCustomerOrder({
-        tenant,
-        inventoryEngine,
-        customerName: shippingAddress.fullName,
-        customerEmail: currentUser.email,
-        customerPhone: shippingAddress.phone || mpesaPhone,
-        items: cart,
-        shippingAddress,
-        paymentMethod,
-        discountCode: appliedDiscount,
-        existingOrderIdCount: highestOrderNum,
-        prepaidApproved: prepaid,
-        mpesaPhoneNumber: mpesaPhone,
-        mpesaReceiptCode: receipt,
-      });
-
-      if (result.success && result.order) {
-        onOrderCreated(result.order);
-        setConfirmedOrder(result.order);
-        setMyOrders((prev) => [result.order!, ...prev.filter((o) => o.id !== result.order!.id)]);
+        const order = data.order as Order;
+        onOrderCreated(order);
+        setConfirmedOrder(order);
+        setMyOrders((prev) => [order, ...prev.filter((o) => o.id !== order.id)]);
         setCart([]);
         setStkState('idle');
         setIsCheckoutOpen(false);
         setCheckoutStep(1);
-      } else {
+      } catch (error) {
         setStkState('idle');
-        setOrderError(result.error || 'Failed to place order.');
+        setOrderError(error instanceof Error ? error.message : 'Failed to place order.');
       }
     };
 
@@ -319,14 +320,15 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
           setActiveReceiptCode(generatedReceipt);
           setStkState('authorized');
           setTimeout(() => {
-            proceedWithCreation(true, generatedReceipt);
+            void submitIntake(generatedReceipt);
           }, 600);
         }, 1200);
       }, 700);
     } else {
-      const isPrepaid = paymentMethod === 'MPESA_PAYBILL' || paymentMethod === 'AIRTEL_MONEY' || paymentMethod === 'CREDIT_CARD';
-      const receipt = paymentMethod === 'MPESA_PAYBILL' ? `RK${Math.floor(10000000 + Math.random() * 90000000)}` : undefined;
-      proceedWithCreation(isPrepaid, receipt);
+      const receipt = paymentMethod === 'MPESA_PAYBILL'
+        ? `RK${Math.floor(10000000 + Math.random() * 90000000)}`
+        : undefined;
+      void submitIntake(receipt);
     }
   };
 
@@ -554,9 +556,9 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
             {filteredProducts.map((product) => {
               const selectedSku =
                 selectedVariants[product.id] || product.variants[0]?.sku || product.sku;
-              const availability = inventoryEngine.getAvailability(selectedSku);
-              const isAvailable = availability.availableStock > 0;
-              const isLowStock = isAvailable && availability.availableStock <= 5;
+              const skuAvailability = availability.getAvailability(selectedSku);
+              const isAvailable = skuAvailability.availableStock > 0;
+              const isLowStock = isAvailable && skuAvailability.availableStock <= 5;
 
               return (
                 <div
@@ -580,7 +582,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                                 : 'bg-emerald-100 text-emerald-900 border border-emerald-200'
                             }`}
                           >
-                            {isLowStock ? `Only ${availability.availableStock} left` : 'In Stock'}
+                            {isLowStock ? `Only ${skuAvailability.availableStock} left` : 'In Stock'}
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 bg-rose-100 text-rose-900 border border-rose-200 rounded-full text-[10px] font-bold shadow-2xs">
@@ -1534,7 +1536,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                       </>
                     ) : (
                       <>
-                        <span>Authorize & Place Order</span>
+                        <span>{stkState === 'submitting' ? 'Reserving your items...' : 'Authorize & Place Order'}</span>
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                       </>
                     )}

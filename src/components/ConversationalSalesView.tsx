@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
 import { Bot, MessageSquare } from 'lucide-react';
 import { Order, Product, Tenant, WarehouseInventory } from '../lib/types.ts';
-import { InventoryStore } from '../lib/inventoryEngine.ts';
 import { AiAssistantView } from './AiAssistantView.tsx';
 import { WhatsAppChannelView } from './WhatsAppChannelView.tsx';
 
 interface ConversationalSalesViewProps {
   tenant: Tenant;
-  inventoryEngine?: InventoryStore;
   products: Product[];
   inventories: WarehouseInventory[];
   orders: Order[];
@@ -19,7 +17,6 @@ interface ConversationalSalesViewProps {
 
 export const ConversationalSalesView: React.FC<ConversationalSalesViewProps> = ({
   tenant,
-  inventoryEngine,
   products,
   inventories,
   orders,
@@ -29,11 +26,6 @@ export const ConversationalSalesView: React.FC<ConversationalSalesViewProps> = (
   initialSubTab = 'assistant',
 }) => {
   const [activeChannel, setActiveChannel] = useState<'assistant' | 'whatsapp'>(initialSubTab);
-
-  // Fallback inventory store if not provided
-  const storeInstance = React.useMemo(() => {
-    return inventoryEngine || new InventoryStore([]);
-  }, [inventoryEngine]);
 
   return (
     <div className="space-y-6">
@@ -94,7 +86,6 @@ export const ConversationalSalesView: React.FC<ConversationalSalesViewProps> = (
         ) : (
           <WhatsAppChannelView
             tenant={tenant}
-            inventoryEngine={storeInstance}
             products={products}
             orders={orders}
             onOrderCreated={onOrderCreated}

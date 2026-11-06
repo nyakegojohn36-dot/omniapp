@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { onAuthStateChanged, signOut } from '@firebase/auth';
 import { TopBar } from './components/TopBar.tsx';
 import { LoginView } from './components/LoginView.tsx';
@@ -18,12 +18,10 @@ import { EmbeddedWhatsAppWidget } from './components/EmbeddedWhatsAppWidget.tsx'
 import { ShieldAlert } from 'lucide-react';
 import {
   SEED_CUSTOMER_PROFILES,
-  SEED_INVENTORIES,
-  SEED_PRODUCTS,
   SEED_TENANTS,
   SEED_USERS,
 } from './lib/sampleData.ts';
-import { InventoryStore } from './lib/inventoryEngine.ts';
+import { availabilityFromMap, type AvailabilityMap } from './lib/availabilitySource.ts';
 import { Order, Product, Tenant, UserRole, WarehouseInventory, StockReservation, User } from './lib/types.ts';
 import { isTabPermitted, getSafeDefaultTab, TabId } from './lib/permissions.ts';
 import { apiFetch, firebaseAuth } from './lib/firebaseClient.ts';
@@ -54,31 +52,78 @@ export default function App() {
   const [isConcurrencyModalOpen, setIsConcurrencyModalOpen] = useState<boolean>(false);
   const [orderSyncStatus, setOrderSyncStatus] = useState<'loading' | 'connected' | 'error'>('loading');
 
-  // Core State Stores
-  const inventoryEngine = useMemo(() => new InventoryStore(SEED_INVENTORIES), []);
-  const [products, setProducts] = useState<Product[]>(SEED_PRODUCTS);
+  // Everything below is a mirror of server state, kept only so the views can
+  // render. Nothing here decides whether a sale may proceed: checkout asks the
+  // server to reserve, and the mirrors are refreshed from the answer.
+  const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [inventories, setInventories] = useState<WarehouseInventory[]>(() =>
-    inventoryEngine.getAllInventories()
-  );
-  const [reservations, setReservations] = useState<StockReservation[]>([
-    {
-      id: 'res-seed-008',
-      tenantId: 'tenant-nordic',
-      orderId: 'ORD-000008',
-      sku: 'TSHIRT001',
-      warehouseId: 'WH-MAIN-US',
-      quantity: 2,
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-      status: 'ACTIVE',
-      createdAt: new Date().toISOString(),
-    },
-  ]);
+  const [availabilityMap, setAvailabilityMap] = useState<AvailabilityMap>({});
+  const [inventories, setInventories] = useState<WarehouseInventory[]>([]);
+  const [reservations, setReservations] = useState<StockReservation[]>([]);
 
-  const refreshInventories = () => {
-    setInventories(inventoryEngine.getAllInventories());
-    setReservations(inventoryEngine.getAllReservations());
-  };
+  const availability = useMemo(() => availabilityFromMap(availabilityMap), [availabilityMap]);
+  const hasLoggedInventoryError = useRef(false);
+
+  const refreshInventory = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const [productsResponse, inventoryResponse] = await Promise.all([
+        apiFetch('/api/products'),
+        apiFetch('/api/inventory'),
+      ]);
+      const productData = await productsResponse.json().catch(() => ({}));
+      const inventoryData = await inventoryResponse.json().catch(() => ({}));
+
+      if (!productsResponse.ok || !Array.isArray(productData?.products)) {
+        throw new Error(productData?.error || `Loading the catalogue failed (HTTP ${productsResponse.status}).`);
+      }
+      if (!inventoryResponse.ok || !inventoryData?.availability) {
+        throw new Error(inventoryData?.error || `Loading stock levels failed (HTTP ${inventoryResponse.status}).`);
+      }
+
+      setProducts(productData.products);
+      setAvailabilityMap(inventoryData.availability);
+      // Staff receive per-warehouse rows and reservations; customers receive only
+      // the summary, so these stay empty for them.
+      setInventories(Array.isArray(inventoryData.inventories) ? inventoryData.inventories : []);
+      setReservations(Array.isArray(inventoryData.reservations) ? inventoryData.reservations : []);
+      hasLoggedInventoryError.current = false;
+    } catch (error) {
+      if (!hasLoggedInventoryError.current) {
+        console.error('Inventory synchronization failed:', error);
+        hasLoggedInventoryError.current = true;
+      }
+    }
+  }, [currentUser]);
+
+  /** Posts a stock command, logs a rejection, and lets the caller refresh. */
+  const stockAction = useCallback(async (path: string, body: unknown) => {
+    const response = await apiFetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = data?.error || `The stock update was rejected (HTTP ${response.status}).`;
+      console.error(`Stock action ${path} failed:`, message);
+      throw new Error(message);
+    }
+    return data;
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setProducts([]);
+      setAvailabilityMap({});
+      setInventories([]);
+      setReservations([]);
+      return;
+    }
+    void refreshInventory();
+    const syncInterval = setInterval(() => void refreshInventory(), 3000);
+    return () => clearInterval(syncInterval);
+  }, [currentUser?.id, refreshInventory]);
 
   useEffect(() => {
     const auth = firebaseAuth;
@@ -213,62 +258,33 @@ export default function App() {
   };
 
   const handleCustomerOrderCreated = (newOrder: Order) => {
+    // The order already exists server-side; adopt the authoritative copy and pull
+    // the stock levels the reservation changed.
     setOrders((prev) => [newOrder, ...prev.filter((o) => o.id !== newOrder.id)]);
-    refreshInventories();
-
-    if (newOrder.customerEmail) {
-      const email = newOrder.customerEmail.trim().toLowerCase();
-      setDynamicUsers((prev) => {
-        if (prev.some((u) => u.email.toLowerCase() === email)) return prev;
-        const newBuyer: User = {
-          id: `usr-ord-${newOrder.id}`,
-          tenantId: currentTenant.id,
-          name: newOrder.customerName || email.split('@')[0],
-          email,
-          role: 'CUSTOMER',
-        };
-        return [newBuyer, ...prev];
-      });
-    }
-
-    apiFetch('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newOrder),
-    }).then(async (response) => {
-      if (!response.ok) throw new Error(`Saving the order failed (HTTP ${response.status}).`);
-    }).catch((error) => console.error('Saving the new order failed:', error));
+    void refreshInventory();
   };
 
   // Add Product Handler (Business Owner / Store Admin only)
   const handleAddProduct = (newProduct: Product, initialStockUS: number, initialStockEU: number) => {
-    setProducts((prev) => [newProduct, ...prev]);
-
-    const usInv: WarehouseInventory = {
-      sku: newProduct.sku,
-      warehouseId: 'WH-MAIN-US',
-      warehouseName: 'Main US Distribution Center (Chicago)',
-      physicalStock: initialStockUS,
-      reservedStock: 0,
-      quarantineStock: 0,
-      lowStockThreshold: 5,
-      lastReconciledAt: new Date().toISOString(),
-    };
-
-    const euInv: WarehouseInventory = {
-      sku: newProduct.sku,
-      warehouseId: 'WH-MAIN-EU',
-      warehouseName: 'European Regional Hub (Frankfurt)',
-      physicalStock: initialStockEU,
-      reservedStock: 0,
-      quarantineStock: 0,
-      lowStockThreshold: 5,
-      lastReconciledAt: new Date().toISOString(),
-    };
-
-    inventoryEngine.addWarehouseInventory(usInv);
-    inventoryEngine.addWarehouseInventory(euInv);
-    refreshInventories();
+    void stockAction('/api/products', {
+      product: newProduct,
+      inventory: [
+        {
+          warehouseId: 'WH-MAIN-US',
+          warehouseName: 'Main US Distribution Center (Chicago)',
+          physicalStock: initialStockUS,
+          lowStockThreshold: 5,
+        },
+        {
+          warehouseId: 'WH-MAIN-EU',
+          warehouseName: 'European Regional Hub (Frankfurt)',
+          physicalStock: initialStockEU,
+          lowStockThreshold: 5,
+        },
+      ],
+    })
+      .then(refreshInventory)
+      .catch(() => undefined);
   };
 
   // Stock Adjustment Handler
@@ -279,41 +295,53 @@ export default function App() {
     quarantineDelta: number,
     reason: string
   ) => {
-    inventoryEngine.recordAdjustment(sku, warehouseId, deltaPhysical, quarantineDelta, reason);
-    refreshInventories();
+    void stockAction('/api/inventory/adjust', {
+      sku,
+      warehouseId,
+      physicalDelta: deltaPhysical,
+      quarantineDelta,
+      reason,
+    })
+      .then(refreshInventory)
+      .catch(() => undefined);
   };
 
   // Reservation Trigger Handler
   const handleTriggerReservation = (sku: string, qty: number) => {
-    const res = inventoryEngine.reserveStock({
-      tenantId: currentTenant.id,
-      orderId: `ORD-${Date.now()}`,
+    void stockAction('/api/inventory/reserve', {
       sku,
       quantity: qty,
-      ttlMinutes: currentTenant.reservationTTLMinutes,
-    });
-    refreshInventories();
-    if (res.success && res.reservation) {
-      setReservations((prev) => [res.reservation!, ...prev]);
-    }
+      orderId: `MANUAL-${Date.now()}`,
+    })
+      .then(refreshInventory)
+      .catch(() => undefined);
   };
 
   // Commit Reservation Handler
   const handleCommitReservation = (reservationId: string) => {
-    inventoryEngine.commitReservation(reservationId);
-    refreshInventories();
+    void stockAction(
+      `/api/inventory/reservations/${encodeURIComponent(reservationId)}/commit`,
+      {}
+    )
+      .then(refreshInventory)
+      .catch(() => undefined);
   };
 
   // Cancel/Release Reservation Handler
   const handleCancelReservation = (reservationId: string) => {
-    inventoryEngine.cancelReservation(reservationId);
-    refreshInventories();
+    void stockAction(
+      `/api/inventory/reservations/${encodeURIComponent(reservationId)}/cancel`,
+      {}
+    )
+      .then(refreshInventory)
+      .catch(() => undefined);
   };
 
   // Sweep Expired Reservations
   const handleSweepExpired = () => {
-    const released = inventoryEngine.cleanExpiredReservations();
-    refreshInventories();
+    void stockAction('/api/inventory/sweep', {})
+      .then(refreshInventory)
+      .catch(() => undefined);
   };
 
   // Order Update Handler
@@ -322,51 +350,49 @@ export default function App() {
       prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
     );
 
-    // Sync order updates with backend
-    apiFetch(`/api/orders/${updatedOrder.id}`, {
+    // Only the fields the server accepts. Status changes run through the order
+    // state machine there, which also commits or releases the reservations.
+    apiFetch(`/api/orders/${encodeURIComponent(updatedOrder.id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updatedOrder),
-    }).then(async (response) => {
-      if (!response.ok) throw new Error(`Updating the order failed (HTTP ${response.status}).`);
-    }).catch((error) => console.error('Updating the order failed:', error));
-
-    // If order was confirmed, commit its stock reservation
-    if (updatedOrder.status === 'CONFIRMED' && updatedOrder.reservationId) {
-      handleCommitReservation(updatedOrder.reservationId);
-    }
+      body: JSON.stringify({
+        status: updatedOrder.status,
+        trackingNumber: updatedOrder.trackingNumber,
+        shippingCarrier: updatedOrder.shippingCarrier,
+        notes: updatedOrder.notes,
+      }),
+    })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data?.error || `Updating the order failed (HTTP ${response.status}).`);
+        }
+        if (data?.order) {
+          setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+        }
+        await refreshInventory();
+      })
+      .catch((error) => console.error('Updating the order failed:', error));
   };
 
   // Webhook Paid Handler
   const handleOrderPaid = (orderId: string, transactionRef: string) => {
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id === orderId) {
-          return {
-            ...o,
-            status: 'CONFIRMED',
-            isPaid: true,
-            paymentTransactionRef: transactionRef,
-            auditTrail: [
-              ...o.auditTrail,
-              {
-                id: `aud-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                fromStatus: o.status,
-                toStatus: 'CONFIRMED',
-                actor: 'stripe-webhook',
-                actorRole: 'SYSTEM',
-                reason: `Payment confirmed via webhook (${transactionRef}). Stock reservation committed.`,
-              },
-            ],
-          };
+    apiFetch(`/api/orders/${encodeURIComponent(orderId)}/payment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactionRef }),
+    })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data?.error || `Confirming payment failed (HTTP ${response.status}).`);
         }
-        return o;
+        if (data?.order) {
+          setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+        }
+        await refreshInventory();
       })
-    );
-
-    // Commit reservation for ORD-000008
-    handleCommitReservation('res-seed-008');
+      .catch((error) => console.error('Confirming payment failed:', error));
   };
 
   const handleLogin = (user: User) => {
@@ -461,9 +487,7 @@ export default function App() {
               <CustomerStorefrontView
                 tenant={currentTenant}
                 products={products}
-                inventories={inventories}
-                inventoryEngine={inventoryEngine}
-                existingOrdersCount={orders.length}
+                availability={availability}
                 orders={orders}
                 currentUser={currentUser}
                 currentRole={currentRole}
@@ -558,7 +582,6 @@ export default function App() {
                   renderWhatsAppView={() => (
                     <WhatsAppChannelView
                       tenant={currentTenant}
-                      inventoryEngine={inventoryEngine}
                       products={products}
                       orders={orders}
                       onOrderCreated={handleCustomerOrderCreated}
@@ -607,7 +630,6 @@ export default function App() {
             {(activeTab === 'ai-sales' || activeTab === 'ai-assistant' || activeTab === 'whatsapp') && (
               <ConversationalSalesView
                 tenant={currentTenant}
-                inventoryEngine={inventoryEngine}
                 products={products}
                 inventories={inventories}
                 orders={orders}
@@ -651,7 +673,6 @@ export default function App() {
         tenant={currentTenant}
         products={products}
         inventories={inventories}
-        inventoryEngine={inventoryEngine}
         displayPhoneNumber="+254 752 720933"
         onOrderCreated={handleCustomerOrderCreated}
         onNavigateTab={handleSelectTab}

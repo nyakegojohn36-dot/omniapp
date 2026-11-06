@@ -13,7 +13,6 @@ import {
   ShieldCheck,
   Phone,
 } from 'lucide-react';
-import { InventoryStore } from '../lib/inventoryEngine.ts';
 import { Order, Product, Tenant, WarehouseInventory } from '../lib/types.ts';
 import { apiFetch } from '../lib/firebaseClient.ts';
 
@@ -21,7 +20,6 @@ interface EmbeddedWhatsAppWidgetProps {
   tenant: Tenant;
   products: Product[];
   inventories: WarehouseInventory[];
-  inventoryEngine: InventoryStore;
   displayPhoneNumber?: string;
   onOrderCreated?: (newOrder: Order) => void;
   onNavigateTab?: (tab: string) => void;
@@ -38,7 +36,6 @@ interface ChatMessage {
 export function EmbeddedWhatsAppWidget({
   tenant,
   products,
-  inventoryEngine,
   displayPhoneNumber = 'WhatsApp Commerce',
   onOrderCreated,
   onNavigateTab,

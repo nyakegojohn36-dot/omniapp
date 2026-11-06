@@ -6,14 +6,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { WhatsAppCloudService } from './src/lib/whatsappCloudService.ts';
-import { InventoryStore } from './src/lib/inventoryEngine.ts';
+import { createCommerceRuntime } from './src/lib/commerceRuntime.ts';
+import { CommerceStateUnavailableError } from './src/lib/firestoreCommerceState.ts';
+import { createOrderFromIntake } from './src/lib/orderIntake.ts';
+import {
+  createTenantRepository,
+  TenantValidationError,
+  UnknownTenantError,
+} from './src/lib/tenantRepository.ts';
+import { transitionOrder } from './src/lib/orderStateMachine.ts';
 import {
   SEED_INVENTORIES,
-  SEED_ORDERS,
   SEED_PRODUCTS,
   SEED_TENANTS,
 } from './src/lib/sampleData.ts';
-import type { Order } from './src/lib/types.ts';
+import { availabilityBySku, type AdjustStockCommand } from './src/lib/commerceState.ts';
+import type { Order, OrderStatus, Product, Tenant, WarehouseInventory } from './src/lib/types.ts';
 import {
   authenticateRequest,
   claimWebhookMessage,
@@ -25,6 +33,7 @@ import {
   listTenantOrders,
   createTenantCustomer,
   listTenantUsers,
+  nextOrderSequence,
   releaseWebhookMessage,
   requireRoles,
   saveOrder,
@@ -96,12 +105,98 @@ app.use(express.json({
 
 app.set('trust proxy', 1);
 
-// In-memory backend stores for the full-stack app
-const inventoryEngine = new InventoryStore(SEED_INVENTORIES);
-const products = [...SEED_PRODUCTS];
-const orders: Order[] = [...SEED_ORDERS];
+// Commerce source of truth. Stock, reservations, and the catalogue are durable;
+// no part of this process keeps an authoritative copy any more.
+const commerce = createCommerceRuntime();
+// Tenant rules (currency, VAT, reservation TTL) are data. The public webhook has
+// no caller identity, so it alone uses this configured default tenant.
+const tenants = createTenantRepository({ seed: SEED_TENANTS });
 const tenantId = process.env.DEFAULT_TENANT_ID || SEED_TENANTS[0].id;
-const tenant = SEED_TENANTS.find((item) => item.id === tenantId) || SEED_TENANTS[0];
+
+/**
+ * Keeps stock in step with the order lifecycle. Confirming an order commits its
+ * reservations, so the units leave the warehouse; cancelling releases them back
+ * into availability. Both operations are idempotent, so a replay cannot
+ * double-count a reservation.
+ */
+async function reconcileReservations(scopedTenantId: string, order: Order): Promise<void> {
+  if (order.status !== 'CONFIRMED' && order.status !== 'CANCELLED') return;
+
+  const reservations = await commerce.state.listReservations(scopedTenantId, {
+    orderId: order.id,
+  });
+  for (const reservation of reservations) {
+    if (reservation.status !== 'ACTIVE') continue;
+    if (order.status === 'CONFIRMED') {
+      await commerce.state.commit(scopedTenantId, reservation.id);
+    } else {
+      await commerce.state.cancel(scopedTenantId, reservation.id);
+    }
+  }
+}
+
+/**
+ * Writes the reference tenants on first boot and reports a misconfigured
+ * DEFAULT_TENANT_ID. Seeding is idempotent, so it is safe on every start.
+ */
+async function bootstrapTenants(): Promise<void> {
+  try {
+    if (await tenants.seedIfEmpty(SEED_TENANTS)) {
+      console.info(`[Tenant] Seeded ${SEED_TENANTS.length} tenant record(s).`);
+    }
+    // This used to fall back silently to tenant one. Now it is loud, because the
+    // WhatsApp webhook has no caller identity to derive a tenant from.
+    if (!await tenants.get(tenantId)) {
+      console.error(
+        `[Tenant] DEFAULT_TENANT_ID "${tenantId}" is not registered. ` +
+        'The WhatsApp webhook will reject messages until it exists.'
+      );
+    }
+  } catch (error) {
+    // Bootstrap must not stop the process: /health still needs to answer so the
+    // platform can report the fault. Tenant-dependent routes fail closed.
+    console.error(
+      '[Tenant] Bootstrap failed:',
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
+/**
+ * Expired reservations are already subtracted at read time, so availability is
+ * never stale. This sweeper exists so the persisted `reservedStock` does not
+ * drift forever and read-time work stays proportional to real demand.
+ *
+ * Disabled with COMMERCE_SWEEP_INTERVAL_SECONDS=0.
+ */
+function startReservationSweeper(scopedTenantId: string): NodeJS.Timeout | null {
+  const configured = Number(process.env.COMMERCE_SWEEP_INTERVAL_SECONDS ?? 60);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    console.info('[Commerce] Reservation sweeper disabled.');
+    return null;
+  }
+  const intervalMs = Math.max(10, configured) * 1000;
+
+  const sweep = async () => {
+    try {
+      const released = await commerce.state.releaseExpired(scopedTenantId);
+      if (released > 0) {
+        console.info(`[Commerce] Sweeper released ${released} expired reservation(s).`);
+      }
+    } catch (error) {
+      // A failed sweep must never take the process down; the next tick retries.
+      console.error(
+        '[Commerce] Reservation sweep failed:',
+        error instanceof Error ? error.message : error
+      );
+    }
+  };
+
+  const handle = setInterval(() => void sweep(), intervalMs);
+  handle.unref();
+  console.info(`[Commerce] Reservation sweeper every ${intervalMs / 1000}s.`);
+  return handle;
+}
 
 app.use('/api', (req: Request, res: Response, next) => {
   const requestPath = req.path.toLowerCase();
@@ -115,7 +210,46 @@ app.use('/api', (req: Request, res: Response, next) => {
 const asyncRoute = (
   handler: (req: Request, res: Response) => Promise<void>
 ): RequestHandler => (req, res, next) => {
-  void handler(req, res).catch(next);
+  void handler(req, res).catch((error) => {
+    if (sendKnownError(res, error)) return;
+    next(error);
+  });
+};
+
+/**
+ * Turning known failures into their real status codes:
+ *  - authoritative store unreachable -> 503 (retryable, never guessed at)
+ *  - token references a tenant that does not exist -> 404 (never a default)
+ *  - tenant payload is invalid -> 400 with the offending field
+ * Anything else keeps falling through to the generic handler.
+ */
+function sendKnownError(res: Response, error: unknown): boolean {
+  if (error instanceof CommerceStateUnavailableError) {
+    console.error('[Commerce] Authoritative store unavailable.', error.originalError ?? error);
+    res.status(503).json({
+      error: 'Inventory and reservations are temporarily unavailable. Please retry in a moment.',
+    });
+    return true;
+  }
+  if (error instanceof UnknownTenantError) {
+    console.error('[Tenant] Unknown tenant on request:', error.tenantId);
+    res.status(404).json({ error: 'No workspace is configured for this account.' });
+    return true;
+  }
+  if (error instanceof TenantValidationError) {
+    res.status(400).json({ error: error.message, field: error.field });
+    return true;
+  }
+  return false;
+}
+
+const commerceRoute = (
+  handler: (req: Request, res: Response) => Promise<void>
+): RequestHandler => (req, res, next) => {
+  void handler(req, res).catch((error) => {
+    if (sendKnownError(res, error)) return;
+    next(error);
+  });
 };
 const initialToken = process.env.WHATSAPP_ACCESS_TOKEN || '';
 const initialAppSecret = process.env.WHATSAPP_APP_SECRET || '';
@@ -226,25 +360,27 @@ const handleInboundWebhook = async (req: Request, res: Response) => {
     const fromNumber = message.from || '+15552345678';
     const customerName = contact?.profile?.name || 'WhatsApp Customer';
     const textBody = message.text?.body || message.button?.text || '';
-    const [persistedSession, persistedOrders] = await Promise.all([
+    const [persistedSession, persistedOrders, stock, catalogue, webhookTenant] = await Promise.all([
       getWhatsAppSession(fromNumber, tenantId),
       listTenantOrders(tenantId),
+      commerce.conversationStock(tenantId),
+      commerce.state.listProducts(tenantId),
+      // The webhook has no caller identity, so it is pinned to the configured
+      // default tenant. If that tenant is not registered this throws and the
+      // event is released for retry rather than priced against a guess.
+      tenants.require(tenantId),
     ]);
     if (persistedSession) whatsappService.restoreSession(persistedSession);
-    orders.splice(0, orders.length, ...persistedOrders);
 
-    const result = whatsappService.processInboundMessage({
+    const result = await whatsappService.processInboundMessage({
       messageId,
       fromNumber,
       customerName,
       textBody,
-      inventoryEngine,
-      products,
-      orders,
-      tenant,
-      onOrderCreated: (newOrder) => {
-        orders.unshift(newOrder);
-      },
+      stock,
+      products: catalogue,
+      orders: persistedOrders,
+      tenant: webhookTenant,
     });
     const session = whatsappService.getSession(fromNumber, customerName);
     await Promise.all([
@@ -308,22 +444,23 @@ app.post(
 
     const fromNumber = `web-${user.id}`;
     const messageId = `web-${randomUUID()}`;
-    const [persistedSession, persistedOrders] = await Promise.all([
+    const [persistedSession, persistedOrders, stock, catalogue] = await Promise.all([
       getWhatsAppSession(fromNumber, user.tenantId),
       listTenantOrders(user.tenantId),
+      commerce.conversationStock(user.tenantId),
+      commerce.state.listProducts(user.tenantId),
     ]);
     if (persistedSession) whatsappService.restoreSession(persistedSession);
-    orders.splice(0, orders.length, ...persistedOrders);
 
-    const result = whatsappService.processWebChatMessage({
+    const result = await whatsappService.processWebChatMessage({
       messageId,
       fromNumber,
       customerName: user.name,
       textBody: textBody.trim(),
-      inventoryEngine,
-      products,
-      orders,
-      tenant,
+      stock,
+      products: catalogue,
+      orders: persistedOrders,
+      tenant: await tenants.require(user.tenantId),
     });
     const session = whatsappService.getSession(fromNumber, user.name);
     await Promise.all([
@@ -343,6 +480,10 @@ app.get('/health', (_req: Request, res: Response) => {
   const config = whatsappService.getConfig();
   res.status(200).json({
     status: 'ok',
+    commerce: {
+      backend: commerce.backend,
+      durable: commerce.backend === 'firestore',
+    },
     whatsapp: {
       mode: config.mode,
       verifyTokenConfigured: Boolean(process.env.WHATSAPP_VERIFY_TOKEN),
@@ -368,6 +509,46 @@ app.get('/health', (_req: Request, res: Response) => {
 app.get('/api/auth/me', (req: Request, res: Response) => {
   res.json({ user: getRequestUser(req) });
 });
+
+// 2b. Tenant configuration. Reads are open to any signed-in member of the
+// workspace; writes are owner/admin only. Registration is platform-operator only.
+app.get(
+  '/api/tenant',
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    res.json({ tenant: await tenants.require(user.tenantId) });
+  })
+);
+
+app.patch(
+  '/api/tenant',
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const updated = await tenants.update(user.tenantId, req.body || {});
+    res.json({ tenant: updated });
+  })
+);
+
+app.get(
+  '/api/tenants',
+  requireRoles('SUPER_ADMIN'),
+  commerceRoute(async (_req, res) => {
+    res.json({ tenants: await tenants.list() });
+  })
+);
+
+app.post(
+  '/api/tenants',
+  requireRoles('SUPER_ADMIN'),
+  commerceRoute(async (req, res) => {
+    const created = await tenants.create(req.body || {});
+    // A new workspace starts with the reference catalogue so it is immediately
+    // sellable rather than an empty shell nobody can place an order against.
+    await commerce.seed(created.id, SEED_INVENTORIES, SEED_PRODUCTS);
+    res.status(201).json({ tenant: created });
+  })
+);
 
 app.get(
   '/api/users',
@@ -645,62 +826,360 @@ app.get(
 
 app.post(
   '/api/orders',
-  asyncRoute(async (req, res) => {
+  commerceRoute(async (req, res) => {
     const user = getRequestUser(req);
-    const submittedOrder = req.body as Order | undefined;
-    if (!submittedOrder?.id || !Array.isArray(submittedOrder.items)) {
-      res.status(400).json({ error: 'Invalid order data.' });
+    const body = req.body || {};
+    const isCustomer = user.role === 'CUSTOMER';
+    const orderTenant = await tenants.require(user.tenantId);
+
+    // A customer session may only buy for itself. Staff placing an order on a
+    // customer's behalf may name the buyer, but the prices still come from us.
+    const customer = {
+      id: isCustomer ? user.id : (typeof body.customer?.id === 'string' ? body.customer.id : undefined),
+      name: isCustomer ? user.name : (body.customer?.name || user.name),
+      email: isCustomer ? user.email : (body.customer?.email || user.email),
+      phone: body.customer?.phone,
+    };
+
+    const result = await createOrderFromIntake(
+      {
+        items: Array.isArray(body.items)
+          ? body.items.map((line: any) => ({ sku: line?.sku, quantity: line?.quantity }))
+          : [],
+        customer,
+        shippingAddress: body.shippingAddress,
+        paymentMethod: body.paymentMethod || 'MPESA_PAYBILL',
+        discountCode: body.discountCode,
+        mpesaPhoneNumber: body.mpesaPhoneNumber,
+        notes: body.notes,
+        claimedTotalCents: typeof body.totalCents === 'number' ? body.totalCents : undefined,
+      },
+      {
+        tenant: orderTenant,
+        state: commerce.state,
+        products: await commerce.state.listProducts(orderTenant.id),
+        nextOrderId: () => nextOrderSequence(orderTenant.id),
+      }
+    );
+
+    if (!result.ok) {
+      res.status(result.status).json({
+        error: result.error,
+        ...(result.sku ? { sku: result.sku } : {}),
+        ...(typeof result.availableStock === 'number' ? { availableStock: result.availableStock } : {}),
+      });
       return;
     }
-    const newOrder: Order = {
-      ...submittedOrder,
-      tenantId: user.tenantId,
-      customerId: user.role === 'CUSTOMER' ? user.id : submittedOrder.customerId,
-      customerEmail: user.role === 'CUSTOMER' ? user.email : submittedOrder.customerEmail,
-      customerName: user.role === 'CUSTOMER' ? user.name : submittedOrder.customerName,
-      updatedAt: new Date().toISOString(),
-    };
-    await saveOrder(newOrder);
-    const existingIndex = orders.findIndex((order) => order.id === newOrder.id);
-    if (existingIndex >= 0) orders[existingIndex] = newOrder;
-    else orders.unshift(newOrder);
-    const tenantOrders = await listTenantOrders(user.tenantId);
-    res.json({ success: true, order: newOrder, ordersCount: tenantOrders.length });
+
+    if (result.warnings.length > 0) {
+      console.warn(`[Orders] ${result.order.id} accepted with warnings:`, result.warnings);
+    }
+    await saveOrder(result.order);
+    res.status(201).json({
+      success: true,
+      order: result.order,
+      reservationIds: result.reservationIds,
+      warnings: result.warnings,
+    });
   })
 );
 
 app.put(
   '/api/orders/:id',
   requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN', 'SALES_STAFF', 'FULFILLMENT_STAFF', 'SUPPORT_STAFF'),
-  asyncRoute(async (req, res) => {
+  commerceRoute(async (req, res) => {
     const user = getRequestUser(req);
     const currentOrder = await getTenantOrder(user.tenantId, req.params.id);
     if (!currentOrder) {
       res.status(404).json({ error: 'Order not found.' });
       return;
     }
-    const updatedOrder: Order = {
-      ...currentOrder,
-      ...req.body,
-      id: currentOrder.id,
-      tenantId: currentOrder.tenantId,
-      customerId: currentOrder.customerId,
+
+    const body = req.body || {};
+    const targetStatus = typeof body.status === 'string'
+      ? (body.status as OrderStatus)
+      : undefined;
+
+    let updatedOrder: Order = currentOrder;
+    if (targetStatus && targetStatus !== currentOrder.status) {
+      const transition = transitionOrder(currentOrder, targetStatus, {
+        actor: user.email,
+        actorRole: user.role,
+        reason: typeof body.reason === 'string' && body.reason.trim()
+          ? body.reason.trim()
+          : `Status changed to ${targetStatus} from the operations workspace.`,
+        metadata: {
+          ...(typeof body.trackingNumber === 'string' ? { trackingNumber: body.trackingNumber } : {}),
+          ...(typeof body.shippingCarrier === 'string'
+            ? { shippingCarrier: body.shippingCarrier }
+            : {}),
+        },
+      });
+      if (!transition.success) {
+        res.status(409).json({ error: transition.error || 'That status change is not permitted.' });
+        return;
+      }
+      updatedOrder = transition.order;
+    }
+
+    // Shipment fields are free text, not part of the state machine.
+    updatedOrder = {
+      ...updatedOrder,
+      ...(typeof body.trackingNumber === 'string' ? { trackingNumber: body.trackingNumber } : {}),
+      ...(typeof body.shippingCarrier === 'string' ? { shippingCarrier: body.shippingCarrier } : {}),
+      ...(typeof body.notes === 'string' ? { notes: body.notes } : {}),
       updatedAt: new Date().toISOString(),
     };
+
+    // Stock follows the order: confirming takes the units, cancelling returns them.
+    await reconcileReservations(user.tenantId, updatedOrder);
+
     await saveOrder(updatedOrder);
-    const index = orders.findIndex((order) => order.id === updatedOrder.id);
-    if (index >= 0) orders[index] = updatedOrder;
     res.json({ success: true, order: updatedOrder });
   })
 );
 
-// 11. Synchronized Inventory & Reservation Store API
-app.get('/api/inventory', requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN', 'FULFILLMENT_STAFF', 'SUPPORT_STAFF'), (_req: Request, res: Response) => {
-  res.json({
-    inventories: inventoryEngine.getAllInventories(),
-    reservations: inventoryEngine.getAllReservations(),
-  });
-});
+/**
+ * Records a verified payment against an order and confirms it.
+ *
+ * Deliberately separate from PUT /api/orders/:id: marking an order paid is not a
+ * status edit a workspace user should be able to fold into a bulk update, and the
+ * state machine refuses CONFIRMED for a prepaid order without this flag.
+ */
+app.post(
+  '/api/orders/:id/payment',
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN', 'SALES_STAFF'),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const currentOrder = await getTenantOrder(user.tenantId, req.params.id);
+    if (!currentOrder) {
+      res.status(404).json({ error: 'Order not found.' });
+      return;
+    }
+
+    const transactionRef = typeof req.body?.transactionRef === 'string'
+      ? req.body.transactionRef.trim()
+      : '';
+    if (!transactionRef) {
+      res.status(400).json({ error: 'A payment reference is required to confirm payment.' });
+      return;
+    }
+
+    // Idempotent: a replayed payment webhook must not re-confirm or re-commit.
+    if (currentOrder.isPaid && currentOrder.status === 'CONFIRMED') {
+      res.json({ success: true, order: currentOrder });
+      return;
+    }
+
+    const transition = transitionOrder(currentOrder, 'CONFIRMED', {
+      actor: user.email,
+      actorRole: user.role,
+      reason: `Payment verified against reference ${transactionRef}.`,
+      paymentConfirmed: true,
+    });
+    if (!transition.success) {
+      res.status(409).json({ error: transition.error || 'This order cannot be marked paid.' });
+      return;
+    }
+
+    const paidOrder: Order = {
+      ...transition.order,
+      isPaid: true,
+      paymentTransactionRef: transactionRef,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await reconcileReservations(user.tenantId, paidOrder);
+    await saveOrder(paidOrder);
+    res.json({ success: true, order: paidOrder });
+  })
+);
+
+// 12. Inventory, reservation, and catalogue API (authoritative store)
+const INVENTORY_READERS = ['BUSINESS_OWNER', 'SUPER_ADMIN', 'FULFILLMENT_STAFF', 'SUPPORT_STAFF'] as const;
+const INVENTORY_WRITERS = ['BUSINESS_OWNER', 'SUPER_ADMIN', 'FULFILLMENT_STAFF'] as const;
+
+app.get(
+  '/api/inventory',
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const [rows, reservations] = await Promise.all([
+      commerce.state.listInventory(user.tenantId),
+      commerce.state.listReservations(user.tenantId),
+    ]);
+
+    // Every authenticated shopper needs to know what is sellable. Only staff get
+    // the per-warehouse breakdown and other customers' reservations.
+    const seesWarehouseDetail = (INVENTORY_READERS as readonly string[]).includes(user.role);
+    const seesReservations = (INVENTORY_WRITERS as readonly string[]).includes(user.role);
+
+    res.json({
+      availability: availabilityBySku(rows),
+      ...(seesWarehouseDetail ? { inventories: rows } : {}),
+      ...(seesReservations ? { reservations } : {}),
+    });
+  })
+);
+
+app.post(
+  '/api/inventory/adjust',
+  requireRoles(...INVENTORY_WRITERS),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const body = req.body || {};
+    const command: AdjustStockCommand = {
+      sku: String(body.sku || '').trim().toUpperCase(),
+      warehouseId: String(body.warehouseId || '').trim(),
+      physicalDelta: Number(body.physicalDelta ?? body.deltaPhysical ?? 0),
+      quarantineDelta: Number(body.quarantineDelta ?? 0),
+      reason: String(body.reason || '').trim(),
+      actor: user.email,
+    };
+
+    if (!command.sku || !command.warehouseId) {
+      res.status(400).json({ error: 'A SKU and warehouse are required.' });
+      return;
+    }
+    if (!Number.isInteger(command.physicalDelta) || !Number.isInteger(command.quarantineDelta)) {
+      res.status(400).json({ error: 'Stock adjustments must be whole numbers.' });
+      return;
+    }
+    if (command.physicalDelta === 0 && command.quarantineDelta === 0) {
+      res.status(400).json({ error: 'An adjustment must change physical or quarantine stock.' });
+      return;
+    }
+    if (!command.reason) {
+      res.status(400).json({ error: 'A reason is required for every stock adjustment.' });
+      return;
+    }
+
+    const updated = await commerce.state.adjust(user.tenantId, command);
+    if (!updated) {
+      res.status(404).json({ error: 'No inventory record matches that SKU and warehouse.' });
+      return;
+    }
+    res.json({ success: true, inventory: updated });
+  })
+);
+
+app.post(
+  '/api/inventory/reserve',
+  requireRoles(...INVENTORY_WRITERS),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const body = req.body || {};
+    const sku = String(body.sku || '').trim().toUpperCase();
+    const quantity = Number(body.quantity);
+
+    if (!sku || !Number.isInteger(quantity) || quantity <= 0) {
+      res.status(400).json({ error: 'A SKU and a positive whole quantity are required.' });
+      return;
+    }
+
+    const result = await commerce.state.reserve(user.tenantId, {
+      orderId: String(body.orderId || `MANUAL-${Date.now()}`),
+      sku,
+      quantity,
+      warehouseId: typeof body.warehouseId === 'string' ? body.warehouseId : undefined,
+      ttlMinutes: (await tenants.require(user.tenantId)).reservationTTLMinutes || 15,
+    });
+
+    res.status(result.success ? 201 : 409).json({
+      success: result.success,
+      reservation: result.reservation,
+      availableStock: result.availableStock,
+      requestedQuantity: result.requestedQuantity,
+      scenario: result.scenario,
+      ...(result.error ? { error: result.error } : {}),
+    });
+  })
+);
+
+app.post(
+  '/api/inventory/reservations/:id/commit',
+  requireRoles(...INVENTORY_WRITERS),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const committed = await commerce.state.commit(user.tenantId, req.params.id);
+    if (!committed) {
+      res.status(409).json({ error: 'That reservation is not active any more.' });
+      return;
+    }
+    res.json({ success: true });
+  })
+);
+
+app.post(
+  '/api/inventory/reservations/:id/cancel',
+  requireRoles(...INVENTORY_WRITERS),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const cancelled = await commerce.state.cancel(user.tenantId, req.params.id);
+    if (!cancelled) {
+      res.status(409).json({ error: 'That reservation is not active any more.' });
+      return;
+    }
+    res.json({ success: true });
+  })
+);
+
+app.post(
+  '/api/inventory/sweep',
+  requireRoles(...INVENTORY_WRITERS),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const released = await commerce.state.releaseExpired(user.tenantId);
+    res.json({ success: true, released });
+  })
+);
+
+app.get(
+  '/api/products',
+  asyncRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    res.json({ products: await commerce.state.listProducts(user.tenantId) });
+  })
+);
+
+app.post(
+  '/api/products',
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const body = req.body || {};
+    const product = body.product as Product | undefined;
+
+    if (!product?.sku || !product?.title) {
+      res.status(400).json({ error: 'A SKU and title are required.' });
+      return;
+    }
+    if (!Number.isInteger(product.basePriceCents) || product.basePriceCents <= 0) {
+      res.status(400).json({ error: 'The selling price must be a positive whole number of cents.' });
+      return;
+    }
+    if (!Array.isArray(body.inventory)) {
+      res.status(400).json({ error: 'Initial stock rows are required.' });
+      return;
+    }
+
+    const saved = await commerce.state.upsertProduct(user.tenantId, product);
+    const now = new Date().toISOString();
+    for (const row of body.inventory as WarehouseInventory[]) {
+      await commerce.state.upsertInventory(user.tenantId, {
+        sku: saved.sku,
+        warehouseId: String(row.warehouseId),
+        warehouseName: String(row.warehouseName || row.warehouseId),
+        physicalStock: Math.max(0, Math.trunc(Number(row.physicalStock) || 0)),
+        reservedStock: 0,
+        quarantineStock: Math.max(0, Math.trunc(Number(row.quarantineStock) || 0)),
+        lowStockThreshold: Math.max(0, Math.trunc(Number(row.lowStockThreshold) || 5)),
+        lastReconciledAt: now,
+      });
+    }
+
+    res.status(201).json({ success: true, product: saved });
+  })
+);
 
 // Meta App Publishing Compliance: Privacy Policy & Terms of Service endpoints
 app.get('/privacy', (_req: Request, res: Response) => {
@@ -773,9 +1252,17 @@ app.use((error: Error, _req: Request, res: Response, next: NextFunction) => {
   return res.status(500).json({ error: 'An unexpected server error occurred.' });
 });
 
-// 7. Mount Vite dev server middleware or serve dist in production
+// 13. Mount Vite dev server middleware or serve dist in production
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
+
+  // Tenant records are data now, so they need the same bootstrap treatment as
+  // the catalogue: write the reference tenants once, then trust the database.
+  await bootstrapTenants();
+  // Bootstrap the durable catalogue once per process. Idempotent: it only writes
+  // when the tenant has no inventory or product records yet.
+  await commerce.seed(tenantId, SEED_INVENTORIES, SEED_PRODUCTS);
+  startReservationSweeper(tenantId);
 
   if (!isProd) {
     const vite = await createViteServer({

@@ -13,7 +13,7 @@
  */
 
 import crypto from 'node:crypto';
-import { InventoryStore } from './inventoryEngine.ts';
+import type { ConversationStockPort } from './commerceState.ts';
 import { calculateOrderPricing, formatCurrency } from './pricingEngine.ts';
 import { generateOrderId } from './orderService.ts';
 import type {
@@ -381,25 +381,27 @@ export class WhatsAppCloudService {
     return { verified: false, error: 'Webhook verification token does not match.' };
   }
 
-  public processWebChatMessage(params: {
+  public async processWebChatMessage(params: {
     messageId: string;
     fromNumber: string;
     customerName: string;
     textBody: string;
-    inventoryEngine: InventoryStore;
+    stock: ConversationStockPort;
     products: Product[];
     orders: Order[];
     tenant: Tenant;
-  }): {
+  }): Promise<{
     responseText: string;
     toolUsed?: string;
     orderCreated?: Order;
     humanTakeoverActive: boolean;
-  } {
+  }> {
     const originalMode = this.config.mode;
     this.config.mode = 'SIMULATED_DEMO';
     try {
-      return this.processInboundMessage({ ...params, allowSelfOrderCreation: false });
+      // `await` is required: without it the finally block would restore the mode
+      // while the inbound message is still being processed.
+      return await this.processInboundMessage({ ...params, allowSelfOrderCreation: false });
     } finally {
       this.config.mode = originalMode;
     }
@@ -408,29 +410,29 @@ export class WhatsAppCloudService {
   /**
    * Main Inbound WhatsApp Message Processor
    */
-  public processInboundMessage(params: {
+  public async processInboundMessage(params: {
     messageId: string;
     fromNumber: string;
     customerName: string;
     textBody: string;
-    inventoryEngine: InventoryStore;
+    stock: ConversationStockPort;
     products: Product[];
     orders: Order[];
     tenant: Tenant;
     allowSelfOrderCreation?: boolean;
     onOrderCreated?: (order: Order) => void;
-  }): {
+  }): Promise<{
     responseText: string;
     toolUsed?: string;
     orderCreated?: Order;
     humanTakeoverActive: boolean;
-  } {
+  }> {
     const {
       messageId,
       fromNumber,
       customerName,
       textBody,
-      inventoryEngine,
+      stock,
       products,
       orders,
       tenant,
@@ -540,7 +542,7 @@ export class WhatsAppCloudService {
         const addr = session.deliveryAddress;
 
         // Authoritatively re-verify inventory live before reservation
-        const liveAvailability = inventoryEngine.getAvailability(cart.sku);
+        const liveAvailability = stock.getAvailability(cart.sku);
         if (liveAvailability.availableStock < cart.quantity) {
           session.step = 'IDLE';
           const reply = `*${tenant.name} - Stock Alert*\n\n` +
@@ -561,9 +563,8 @@ export class WhatsAppCloudService {
         }
         const orderId = generateOrderId(maxSeq + 1);
 
-        // Atomic stock reservation
-        const res = inventoryEngine.reserveStock({
-          tenantId: tenant.id,
+        // Atomic stock reservation against the authoritative store
+        const res = await stock.reserveStock({
           orderId,
           sku: cart.sku,
           quantity: cart.quantity,
@@ -724,7 +725,7 @@ export class WhatsAppCloudService {
       const matchNum = cleanText.match(/\b\d+\b/);
       const qty = matchNum ? parseInt(matchNum[0], 10) : 1;
 
-      const avail = inventoryEngine.getAvailability(session.cart.sku);
+      const avail = stock.getAvailability(session.cart.sku);
       if (avail.availableStock <= 0) {
         session.step = 'IDLE';
         session.cart = undefined;
@@ -762,7 +763,7 @@ export class WhatsAppCloudService {
     if ((lower.startsWith('buy') || lower.startsWith('order') || lower.includes('i want to buy') || lower.includes('i want')) && skuCandidate) {
       const prod = products.find((p) => p.sku.toLowerCase() === skuCandidate.toLowerCase());
       if (prod) {
-        const avail = inventoryEngine.getAvailability(prod.sku);
+        const avail = stock.getAvailability(prod.sku);
         if (avail.availableStock <= 0) {
           const reply = `*${tenant.name} - Out of Stock*\n\n` +
             `We are sorry, *${prod.title}* (SKU: \`${prod.sku}\`) is currently out of stock.\n\n` +
@@ -890,13 +891,13 @@ export class WhatsAppCloudService {
 
     // 6. Real Catalogue & Stock Inquiries (No invented prices or inventory)
     if (lower.includes('tshirt') || lower.includes('t-shirt') || lower.includes('crewneck') || lower.includes('tshirt001')) {
-      const stock = inventoryEngine.getAvailability('TSHIRT001');
+      const availability = stock.getAvailability('TSHIRT001');
       const prod = products.find((p) => p.sku === 'TSHIRT001');
       const price = prod ? formatCurrency(prod.basePriceCents, prod.currency, tenant.locale) : '$48.00';
 
       const reply = `*${tenant.name} - Real-Time Stock Status*\n\n` +
         `Yes! Our *Merino Wool Trail Crewneck T-Shirt* (SKU: \`TSHIRT001\`) is in stock.\n\n` +
-        `• Available Units: *${stock.availableStock}*\n` +
+        `• Available Units: *${availability.availableStock}*\n` +
         `• Price: *${price}*\n` +
         `• Color: Navy / Charcoal\n` +
         `• Material: 100% Sustainable Merino Wool\n\n` +
@@ -907,26 +908,30 @@ export class WhatsAppCloudService {
     }
 
     if (lower.includes('flask') || lower.includes('bottle') || lower.includes('flask-vac-750')) {
-      const stock = inventoryEngine.getAvailability('FLASK-VAC-750');
-      const reply = `*${tenant.name} - Out of Stock Notification*\n\n` +
-        `The *Vacuum Thermal Trail Flask* (SKU: \`FLASK-VAC-750\`) is currently completely sold out across all fulfillment centers.\n\n` +
-        `*Available in-stock alternatives:*\n` +
-        `• *Glacier Hardshell Jacket* (SKU: \`JKT-GLACIER-01\`) - $240.00\n` +
-        `• *Merino Wool Trail Crewneck* (SKU: \`TSHIRT001\`) - $48.00\n\n` +
-        `Reply *CATALOGUE* to browse all items or *AGENT* for restock notifications.`;
+      const availability = stock.getAvailability('FLASK-VAC-750');
+      // Only claim sold out when the warehouse actually says so; otherwise fall
+      // through to the live catalogue summary below.
+      if (availability.availableStock <= 0) {
+        const reply = `*${tenant.name} - Out of Stock Notification*\n\n` +
+          `The *Vacuum Thermal Trail Flask* (SKU: \`FLASK-VAC-750\`) is currently completely sold out across all fulfillment centers.\n\n` +
+          `*Available in-stock alternatives:*\n` +
+          `• *Glacier Hardshell Jacket* (SKU: \`JKT-GLACIER-01\`) - $240.00\n` +
+          `• *Merino Wool Trail Crewneck* (SKU: \`TSHIRT001\`) - $48.00\n\n` +
+          `Reply *CATALOGUE* to browse all items or *AGENT* for restock notifications.`;
 
-      this.recordOutbound(fromNumber, customerName, reply, 'getAvailability("FLASK-VAC-750")');
-      return { responseText: reply, toolUsed: 'getAvailability("FLASK-VAC-750")', humanTakeoverActive: false };
+        this.recordOutbound(fromNumber, customerName, reply, 'getAvailability("FLASK-VAC-750")');
+        return { responseText: reply, toolUsed: 'getAvailability("FLASK-VAC-750")', humanTakeoverActive: false };
+      }
     }
 
     if (lower.includes('beanie') || lower.includes('cap') || lower.includes('bnie-ribbed-01')) {
-      const stock = inventoryEngine.getAvailability('BNIE-RIBBED-01');
+      const availability = stock.getAvailability('BNIE-RIBBED-01');
       const prod = products.find((p) => p.sku === 'BNIE-RIBBED-01');
       const price = prod ? formatCurrency(prod.basePriceCents, prod.currency, tenant.locale) : '$28.00';
 
       const reply = `*${tenant.name}*\n\n` +
         `*Ribbed Merino Watch Cap* (SKU: \`BNIE-RIBBED-01\`):\n` +
-        `• Available Stock: *${stock.availableStock} units*\n` +
+        `• Available Stock: *${availability.availableStock} units*\n` +
         `• Unit Price: *${price}*\n\n` +
         `Reply *BUY BNIE-RIBBED-01* to place an order.`;
 
@@ -935,13 +940,13 @@ export class WhatsAppCloudService {
     }
 
     if (lower.includes('jacket') || lower.includes('hardshell') || lower.includes('jkt-glacier-01')) {
-      const stock = inventoryEngine.getAvailability('JKT-GLACIER-01');
+      const availability = stock.getAvailability('JKT-GLACIER-01');
       const prod = products.find((p) => p.sku === 'JKT-GLACIER-01');
       const price = prod ? formatCurrency(prod.basePriceCents, prod.currency, tenant.locale) : '$240.00';
 
       const reply = `*${tenant.name}*\n\n` +
         `*Glacier Technical Hardshell Jacket* (SKU: \`JKT-GLACIER-01\`):\n` +
-        `• Available Stock: *${stock.availableStock} units*\n` +
+        `• Available Stock: *${availability.availableStock} units*\n` +
         `• Unit Price: *${price}*\n\n` +
         `Reply *BUY JKT-GLACIER-01* to order today.`;
 
@@ -952,7 +957,7 @@ export class WhatsAppCloudService {
     // 7. General Catalogue / Greeting Response
     const catalogueSummary = products
       .map((p) => {
-        const avail = inventoryEngine.getAvailability(p.sku);
+        const avail = stock.getAvailability(p.sku);
         const inStock = avail.availableStock > 0;
         return `• *${p.title}* (\`${p.sku}\`) - ${formatCurrency(p.basePriceCents, p.currency)} ${inStock ? `(${avail.availableStock} in stock)` : '*(Out of Stock)*'}`;
       })
