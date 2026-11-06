@@ -150,6 +150,9 @@ jobs:
       # Two things have gone wrong in this repository before: a green deploy that
       # still served the previous build, and a SPA built without its Firebase
       # config. Ask the running service about both instead of assuming.
+      #
+      # The assertions live in tools/smoke-deployed.mjs so the same code can be run
+      # against a live URL from a developer machine before CI trusts it.
       - name: Smoke test the live service
         run: |
           set -euo pipefail
@@ -157,22 +160,4 @@ jobs:
             --region "$REGION" --project "$PROJECT_ID" \
             --format 'value(status.url)')
           echo "Service URL: $URL"
-
-          curl -fsS "$URL/health" | tee health.json
-          grep -q '"commerce"' health.json ||
-            { echo "::error::/health has no commerce block - the old build is still serving."; exit 1; }
-          grep -q '"durable":true' health.json ||
-            { echo "::error::Commerce is not durable - COMMERCE_STATE_BACKEND is not firestore."; exit 1; }
-
-          # Proves the VITE_* build args reached the bundle. Without them the page
-          # loads, sign-in is unavailable, and nothing explains why.
-          curl -fsS "$URL/" > index.html
-          BUNDLE=$(grep -o '/assets/[^"]*\.js' index.html | head -n 1)
-          echo "Bundle: $BUNDLE"
-          curl -fsS "$URL$BUNDLE" | grep -q "$PROJECT_ID" ||
-            { echo "::error::The bundle has no Firebase project id - VITE_FIREBASE_* variables are missing or empty."; exit 1; }
-          if grep -q 'MockWebSocket' index.html; then
-            echo "::error::index.html still carries the dev HMR shim - the build did not run stripDevHmrShim."
-            exit 1
-          fi
-          echo "Smoke tests passed."
+          node tools/smoke-deployed.mjs "$URL" "$PROJECT_ID"

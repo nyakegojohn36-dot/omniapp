@@ -236,12 +236,13 @@ them never reaches the deploy job.
    Registry, tagged with the commit SHA.
 3. **deploy** — `gcloud run deploy` rolls the service to that tag.
 4. **rules** — `firebase deploy --only firestore:rules,firestore:indexes`.
-5. **smoke test** — calls `/health` on the deployed URL, then fetches the served
-   bundle and checks it carries the Firebase project ID and no dev HMR shim. The
-   run **fails** if commerce is not durable, if the SPA was built without its
-   `VITE_FIREBASE_*` values, or if the shim survived. A green deploy that is
-   still answering from the previous build has happened here before; this step
-   makes that impossible to miss.
+5. **smoke test** — runs `tools/smoke-deployed.mjs` against the deployed URL. It
+   asserts `/health` reports a durable commerce backend, that the served bundle
+   carries the Firebase project id, and that no dev HMR shim survived into
+   `index.html`. The run **fails** on any of them. A green deploy that is still
+   answering from the previous build has happened here before; this step makes
+   that impossible to miss. The same script runs locally:
+   `node tools/smoke-deployed.mjs https://<service-url>`.
 
 One Cloud Run service serves both the API and the built SPA (`server.ts` serves
 `dist` when `NODE_ENV=production`), so there is one origin and no CORS or
