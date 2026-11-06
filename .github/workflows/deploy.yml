@@ -1,0 +1,109 @@
+# One push to main ships both halves: the container that serves the SPA and the
+# API (Cloud Run), and the Firestore rules and indexes that container reads
+# through. Nothing here needs a local gcloud install.
+#
+# Kept separate from ci.yml so a red typecheck blocks the rollout on its own
+# signal, rather than being buried in a deploy log.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: sokoflow-whatsapp
+  REGION: us-central1
+  SERVICE: sokoflow
+  REPOSITORY: sokoflow
+
+jobs:
+  # Deploying a commit that does not typecheck or pass its own tests is how a
+  # broken build reaches production looking successful.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Ensure the Artifact Registry repository exists
+        run: |
+          gcloud artifacts repositories describe "$REPOSITORY" \
+            --location "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1 ||
+          gcloud artifacts repositories create "$REPOSITORY" \
+            --repository-format=docker \
+            --location "$REGION" \
+            --project "$PROJECT_ID" \
+            --description "SokoFlow container images"
+
+      - name: Build and push the image
+        run: |
+          gcloud builds submit \
+            --project "$PROJECT_ID" \
+            --config cloudbuild.yaml \
+            --substitutions="_TAG=${GITHUB_SHA},_REGION=${REGION},_REPO=${REPOSITORY},_VITE_FIREBASE_API_KEY=${{ vars.VITE_FIREBASE_API_KEY }},_VITE_FIREBASE_AUTH_DOMAIN=${{ vars.VITE_FIREBASE_AUTH_DOMAIN }},_VITE_FIREBASE_PROJECT_ID=${{ vars.VITE_FIREBASE_PROJECT_ID }},_VITE_FIREBASE_APP_ID=${{ vars.VITE_FIREBASE_APP_ID }}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/app:${GITHUB_SHA}" \
+            --region "$REGION" \
+            --project "$PROJECT_ID" \
+            --platform managed \
+            --allow-unauthenticated \
+            --update-env-vars "NODE_ENV=production,FIREBASE_PROJECT_ID=${PROJECT_ID},COMMERCE_STATE_BACKEND=firestore,OWNER_EMAILS=${{ vars.OWNER_EMAILS }}"
+
+      - name: Deploy Firestore rules and indexes
+        run: |
+          npx --yes firebase-tools deploy \
+            --only firestore:rules,firestore:indexes \
+            --project "$PROJECT_ID" \
+            --non-interactive
+
+      # A green deploy that still answers from the previous build has happened
+      # before. Ask the running service what it is instead of assuming.
+      - name: Smoke test the live service
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" \
+            --region "$REGION" --project "$PROJECT_ID" \
+            --format 'value(status.url)')
+          echo "Service URL: $URL"
+          curl -fsS "$URL/health" | tee health.json
+          grep -q '"commerce"' health.json ||
+            { echo "::error::/health has no commerce block - the old build is still serving."; exit 1; }
+          grep -q '"durable":true' health.json ||
+            { echo "::error::Commerce is not durable - COMMERCE_STATE_BACKEND is not firestore."; exit 1; }

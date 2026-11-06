@@ -187,9 +187,18 @@ There is no DOM test harness. UI changes are verified by `npm run lint` and
 ## Deployment
 
 ```bash
-docker build -t sokoflow .
+docker build -t sokoflow \
+  --build-arg VITE_FIREBASE_API_KEY=... \
+  --build-arg VITE_FIREBASE_AUTH_DOMAIN=... \
+  --build-arg VITE_FIREBASE_PROJECT_ID=... \
+  --build-arg VITE_FIREBASE_APP_ID=... .
 docker run -p 8080:8080 -e PORT=8080 --env-file .env sokoflow
 ```
+
+Those four are build args rather than something read from `.env` because
+`.dockerignore` keeps `.env` out of the build context, and Vite inlines `VITE_*`
+at build time. They are public identifiers; the secrets are runtime variables and
+stay out of the image entirely.
 
 The image builds `dist` and bundles `server.js`, then runs with
 `NODE_ENV=production`, which switches Vite middleware off and serves `dist`
@@ -215,6 +224,72 @@ its real `window.WebSocket` and its real console errors.
 
 CI (`.github/workflows/ci.yml`) runs install → typecheck → tests → build on every
 push and pull request. It needs no secrets.
+
+### One push deploys both halves
+
+`.github/workflows/deploy.yml` runs on every push to `main`. A push is the whole
+release procedure:
+
+1. **verify** — the same typecheck, tests and build as CI. A commit that fails
+them never reaches the deploy job.
+2. **build** — `cloudbuild.yaml` builds the image and pushes it to Artifact
+   Registry, tagged with the commit SHA.
+3. **deploy** — `gcloud run deploy` rolls the service to that tag.
+4. **rules** — `firebase deploy --only firestore:rules,firestore:indexes`.
+5. **smoke test** — calls `/health` on the deployed URL and **fails the run** if
+   the response has no `commerce` block or reports `durable:false`. A green
+   deploy that is still answering from the previous build has happened here
+   before; this step is what makes that impossible to miss.
+
+One Cloud Run service serves both the API and the built SPA (`server.ts` serves
+`dist` when `NODE_ENV=production`), so there is one origin and no CORS or
+`VITE_API_BASE_URL` to keep in sync.
+
+#### One-time setup
+
+Repository **secret**:
+
+| Name | Value |
+| --- | --- |
+| `GCP_SA_KEY` | a service account JSON key for the deployer |
+
+Repository **variables** (public values, so not secrets):
+
+| Name | Value |
+| --- | --- |
+| `VITE_FIREBASE_API_KEY` | from the web app config |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `sokoflow-whatsapp.firebaseapp.com` |
+| `VITE_FIREBASE_PROJECT_ID` | `sokoflow-whatsapp` |
+| `VITE_FIREBASE_APP_ID` | from the web app config |
+| `OWNER_EMAILS` | the address that signs in as `BUSINESS_OWNER` |
+
+The deployer service account needs:
+
+```
+roles/run.admin                roles/cloudbuild.builds.editor
+roles/iam.serviceAccountUser   roles/artifactregistry.writer
+roles/storage.admin            roles/firebaserules.admin
+roles/datastore.indexAdmin
+```
+
+and these APIs enabled on the project: Cloud Run, Cloud Build, Artifact Registry,
+Firestore, and Identity Toolkit. A long-lived JSON key is used here because it
+needs no extra setup; Workload Identity Federation is the better long-term choice
+and drops `GCP_SA_KEY` in favour of `workload_identity_provider` plus
+`service_account`.
+
+#### Runtime configuration
+
+The workflow sets only `NODE_ENV`, `FIREBASE_PROJECT_ID`,
+`COMMERCE_STATE_BACKEND` and `OWNER_EMAILS`, using `--update-env-vars` so anything
+else already on the service survives. The WhatsApp access token, app secret and
+phone number ID, and the Daraja keys, are set **once** on the Cloud Run service
+(Console → Cloud Run → sokoflow → Edit & deploy → Variables), ideally from Secret
+Manager. They are not in the workflow and not in the image.
+
+The service gets a `*.run.app` URL. `sokoflow.ai.studio` belongs to AI Studio's
+hosting, so pointing that domain at this service means adding a domain mapping in
+Cloud Run — otherwise the two continue to be separate deployments.
 
 ---
 
