@@ -51,6 +51,41 @@ jobs:
         with:
           node-version: '22'
 
+      # These three checks exist so a bad secret reports its own defect instead of
+      # surfacing as an opaque failure inside auth@v2, which only writes the file
+      # and reads fields - it never calls Google, so its errors are all about shape.
+      - name: Check GCP_SA_KEY is present
+        env:
+          KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::GCP_SA_KEY is empty or does not exist."
+            exit 1
+          fi
+          echo "Secret is ${#KEY} characters long."
+
+      - name: Check GCP_SA_KEY is valid JSON
+        env:
+          KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          printf '%s' "$KEY" > key.json
+          if ! node -e 'JSON.parse(require("fs").readFileSync("key.json", "utf8"))'; then
+            echo "::error::GCP_SA_KEY is not valid JSON. The usual cause is copying from a rendered or pretty-printed view, which puts real line breaks inside private_key."
+            exit 1
+          fi
+          rm -f key.json
+
+      - name: Check GCP_SA_KEY belongs to the deployer
+        env:
+          KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          EMAIL=$(printf '%s' "$KEY" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).client_email||"(none)")}catch(e){console.log("(unparseable)")}})')
+          echo "Key belongs to: $EMAIL"
+          case "$EMAIL" in
+            sokoflow-deployer@*) ;;
+            *) echo "::error::GCP_SA_KEY belongs to $EMAIL, not sokoflow-deployer@sokoflow-whatsapp.iam.gserviceaccount.com."; exit 1 ;;
+          esac
+
       - id: auth
         uses: google-github-actions/auth@v2
         with:
