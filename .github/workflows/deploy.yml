@@ -60,6 +60,18 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
+      # A JSON key from any service account authenticates, so a key that belongs
+      # to the wrong account sails through auth and then fails on permissions a
+      # step later. Say out loud whose credentials these are.
+      - name: Show the deploying identity
+        run: |
+          ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
+          echo "Deploying as: $ACCOUNT"
+          case "$ACCOUNT" in
+            *iam.gserviceaccount.com) ;;
+            *) echo "::warning::Expected a service account, got $ACCOUNT." ;;
+          esac
+
       - name: Ensure the Artifact Registry repository exists
         run: |
           set -euo pipefail
