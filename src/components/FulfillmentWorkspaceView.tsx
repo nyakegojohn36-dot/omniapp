@@ -22,6 +22,7 @@ import {
 import { FulfillmentTask, Order, Tenant, UserRole, WarehouseInventory } from '../lib/types.ts';
 import { SEED_FULFILLMENT_TASKS } from '../lib/sampleData.ts';
 import { formatCurrency } from '../lib/pricingEngine.ts';
+import { ReturnsPanel } from './ReturnsPanel.tsx';
 
 interface FulfillmentWorkspaceViewProps {
   tenant: Tenant;
@@ -227,6 +228,11 @@ export const FulfillmentWorkspaceView: React.FC<FulfillmentWorkspaceViewProps> =
           </div>
         </div>
       )}
+
+      {/* Returns sit above the pick list on purpose: receiving a return is the
+          only path by which stock re-enters the sellable count, so it is a
+          stage of warehouse work rather than a support department's problem. */}
+      <ReturnsPanel tenant={tenant} currentRole={currentRole} onOrderUpdated={onUpdateOrder} />
 
       {/* Operational Stage KPI Ribbon */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

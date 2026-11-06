@@ -18,6 +18,14 @@ import { ALLOWED_TRANSITIONS, transitionOrder } from '../lib/orderStateMachine.t
 import { formatCurrency } from '../lib/pricingEngine.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
 
+/**
+ * Statuses that must never be forced from this inspector. They are reachable
+ * only through returns.ts, which moves quarantine stock and demands a refund
+ * reference; a raw status write here would change the label while leaving the
+ * stock and the money where they were.
+ */
+const RETURN_STATES: OrderStatus[] = ['RETURN_REQUESTED', 'RETURNED', 'REFUND_PENDING'];
+
 interface OrderStateMachineViewProps {
   tenant: Tenant;
   orders: Order[];
@@ -346,91 +354,33 @@ export const OrderStateMachineView: React.FC<OrderStateMachineViewProps> = ({
                     </button>
                   )}
 
-                  {/* Transition: SHIPPED -> DELIVERED or RETURN_REQUESTED */}
+                  {/* Transition: SHIPPED -> DELIVERED */}
                   {selectedOrder.status === 'SHIPPED' && (
-                    <>
-                      <button
-                        onClick={() =>
-                          handleExecuteTransition(
-                            'DELIVERED',
-                            'Customer signed for parcel receipt.'
-                          )
-                        }
-                        className="px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-colors shadow-2xs"
-                      >
-                        Courier Confirmed Delivery &rarr; DELIVERED
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleExecuteTransition(
-                            'RETURN_REQUESTED',
-                            'Customer requested return due to incorrect fit.'
-                          )
-                        }
-                        className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-                      >
-                        Customer Return Request
-                      </button>
-                    </>
-                  )}
-
-                  {/* Transition: DELIVERED -> RETURN_REQUESTED */}
-                  {selectedOrder.status === 'DELIVERED' && (
                     <button
                       onClick={() =>
                         handleExecuteTransition(
-                          'RETURN_REQUESTED',
-                          'Customer lodged return request within 30-day window.'
-                        )
-                      }
-                      className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-                    >
-                      Start Return Request &rarr; RETURN_REQUESTED
-                    </button>
-                  )}
-
-                  {/* Transition: RETURN_REQUESTED -> RETURNED */}
-                  {selectedOrder.status === 'RETURN_REQUESTED' && (
-                    <button
-                      onClick={() =>
-                        handleExecuteTransition(
-                          'RETURNED',
-                          'Item arrived at warehouse and passed QA inspection.'
-                        )
-                      }
-                      className="px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors shadow-2xs"
-                    >
-                      Inspect Received Goods &rarr; RETURNED
-                    </button>
-                  )}
-
-                  {/* Transition: RETURNED -> REFUND_PENDING -> REFUNDED */}
-                  {selectedOrder.status === 'RETURNED' && (
-                    <button
-                      onClick={() =>
-                        handleExecuteTransition(
-                          'REFUND_PENDING',
-                          'Warehouse approved full return. Refund authorized for payment processor.'
+                          'DELIVERED',
+                          'Customer signed for parcel receipt.'
                         )
                       }
                       className="px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-colors shadow-2xs"
                     >
-                      Authorize Refund &rarr; REFUND_PENDING
+                      Courier Confirmed Delivery &rarr; DELIVERED
                     </button>
                   )}
 
-                  {selectedOrder.status === 'REFUND_PENDING' && (
-                    <button
-                      onClick={() =>
-                        handleExecuteTransition(
-                          'REFUNDED',
-                          'M-PESA / Pesapal reversal completed to customer mobile wallet.'
-                        )
-                      }
-                      className="px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors shadow-2xs"
-                    >
-                      Execute Payment Refund &rarr; REFUNDED
-                    </button>
+                  {RETURN_STATES.includes(selectedOrder.status) && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 flex items-start gap-2">
+                      <RotateCcw className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                      <span>
+                        <span className="font-semibold">
+                          Returns run through the Returns workspace.
+                        </span>{' '}
+                        Receiving, grading and refunding move real stock and real money, so
+                        those transitions are executed by the returns service rather than
+                        forced from this inspector.
+                      </span>
+                    </div>
                   )}
                 </div>
               )}

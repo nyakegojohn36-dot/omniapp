@@ -15,7 +15,6 @@ import {
   ExternalLink,
   ChevronRight,
   Filter,
-  DollarSign,
   Phone,
   Mail,
   MapPin,
@@ -26,6 +25,7 @@ import { apiFetch } from '../lib/firebaseClient.ts';
 import { SEED_CUSTOMER_PROFILES, SEED_SUPPORT_CASES } from '../lib/sampleData.ts';
 import { formatCurrency } from '../lib/pricingEngine.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
+import { ReturnsPanel, ReturnRequestAction } from './ReturnsPanel.tsx';
 
 interface CustomerSupportWorkspaceViewProps {
   tenant: Tenant;
@@ -51,6 +51,7 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
   const [replyText, setReplyText] = useState<string>('');
   const [isSendingReply, setIsSendingReply] = useState<boolean>(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [returnsRefresh, setReturnsRefresh] = useState<number>(0);
   const [showInvoiceModal, setShowInvoiceModal] = useState<boolean>(false);
 
   // Instant Stock Check Tool in Support Panel
@@ -221,20 +222,12 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
     setReplyText(suggestion);
   };
 
-  // Policy-Checked Support Actions
-  const handleInitiateRefund = () => {
-    if (!matchingOrder) return;
-    const supportMaxLimitCents = 500000; // KES 5,000 max support limit without manager escalation
-    if (matchingOrder.totalCents > supportMaxLimitCents) {
-      setActionNotice(
-        `Refund request for ${formatCurrency(matchingOrder.totalCents, tenant.currency)} exceeds Support Agent limit (${formatCurrency(supportMaxLimitCents, tenant.currency)}). Case escalated to Manager for approval.`
-      );
-    } else {
-      setActionNotice(
-        `Refund initiated for ${formatCurrency(matchingOrder.totalCents, tenant.currency)}. M-PESA / Pesapal reversal requested.`
-      );
-    }
-    setTimeout(() => setActionNotice(null), 4000);
+  // Returns are a server-side case, not a policy shortcut. The desk can raise a
+  // claim on the customer's behalf and watch it move, but it cannot pretend to
+  // refund: /api/returns/:id/refund is restricted to owners and super admins.
+  const handleOrderTouchedByReturn = (order: Order) => {
+    onUpdateOrder?.(order);
+    setReturnsRefresh((previous) => previous + 1);
   };
 
   const handleAddressUpdateStaged = () => {
@@ -764,14 +757,25 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
                   <span>Stage Address Modification</span>
                   <ChevronRight className="w-3 h-3 text-slate-400" />
                 </button>
-                <button
-                  onClick={handleInitiateRefund}
-                  className="w-full py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-md text-xs font-medium text-left flex items-center justify-between"
-                >
-                  <span>Initiate Authorized Refund ({formatCurrency(500000, tenant.currency)} max)</span>
-                  <DollarSign className="w-3.5 h-3.5 text-emerald-600" />
-                </button>
               </div>
+
+              {/* A refund is not something an agent can press: the money leaves
+                  through Daraja, and only an owner may attest that it did. Support
+                  raises or follows the case instead, and reads its real state. */}
+              <ReturnRequestAction
+                tenant={tenant}
+                order={matchingOrder}
+                onOrderUpdated={handleOrderTouchedByReturn}
+              />
+
+              <ReturnsPanel
+                tenant={tenant}
+                currentRole={currentRole}
+                orderId={matchingOrder.id}
+                variant="flat"
+                refreshToken={returnsRefresh}
+                onOrderUpdated={handleOrderTouchedByReturn}
+              />
             </div>
           ) : (
             <div className="bg-white border border-slate-200 rounded-xl p-4 text-xs text-slate-500 text-center">

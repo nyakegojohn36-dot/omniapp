@@ -33,6 +33,7 @@ import { calculateOrderPricing, formatCurrency } from '../lib/pricingEngine.ts';
 import { Order, OrderAddress, PaymentMethod, Product, Tenant, User as AppUser, UserRole } from '../lib/types.ts';
 import { apiFetch } from '../lib/firebaseClient.ts';
 import { KraTaxInvoiceModal } from './KraTaxInvoiceModal.tsx';
+import { ReturnRequestAction } from './ReturnsPanel.tsx';
 
 interface CustomerStorefrontViewProps {
   tenant: Tenant;
@@ -832,6 +833,10 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                     </div>
                   </div>
 
+                  {/* Only a delivered order can be claimed, and the server owns
+                      that decision. This renders nothing for any other status. */}
+                  <ReturnRequestAction tenant={tenant} order={ord} />
+
                   {/* Carrier & M-PESA / eTIMS Fiscal Info */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
                     <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
@@ -1436,7 +1441,9 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                     <span className="font-mono text-xs font-bold text-blue-700">Pesalink</span>
                   </label>
 
-                  {/* Card (Pesapal) */}
+                  {/* There is no card processor wired in. Selecting this creates an
+                      unpaid order that the finance desk settles out of band, so the
+                      label must not imply a checkout that does not exist. */}
                   <label
                     onClick={() => setPaymentMethod('CREDIT_CARD')}
                     className={`p-3.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
@@ -1450,11 +1457,13 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                         <CreditCard className="w-4 h-4 text-white" />
                       </div>
                       <div>
-                        <div className="font-bold text-slate-900">Credit / Debit Card (Pesapal Kenya)</div>
-                        <div className="text-[11px] text-slate-500">Visa, Mastercard, American Express</div>
+                        <div className="font-bold text-slate-900">Credit / Debit Card</div>
+                        <div className="text-[11px] text-slate-500">
+                          No card is charged online. The order is saved as awaiting payment.
+                        </div>
                       </div>
                     </div>
-                    <span className="font-mono text-xs font-bold text-slate-900">Visa / MC</span>
+                    <span className="font-mono text-xs font-bold text-slate-900">Invoice</span>
                   </label>
                 </div>
 
