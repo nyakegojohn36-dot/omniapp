@@ -62,13 +62,19 @@ jobs:
 
       - name: Ensure the Artifact Registry repository exists
         run: |
-          gcloud artifacts repositories describe "$REPOSITORY" \
-            --location "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1 ||
-          gcloud artifacts repositories create "$REPOSITORY" \
-            --repository-format=docker \
-            --location "$REGION" \
-            --project "$PROJECT_ID" \
-            --description "SokoFlow container images"
+          set -euo pipefail
+          if gcloud artifacts repositories describe "$REPOSITORY" \
+               --location "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+            echo "Repository $REPOSITORY already exists in $REGION."
+          else
+            # Needs roles/artifactregistry.admin. Writer can push to a repository
+            # that exists but cannot create one, which is why the first run fails here.
+            gcloud artifacts repositories create "$REPOSITORY" \
+              --repository-format=docker \
+              --location "$REGION" \
+              --project "$PROJECT_ID" \
+              --description "SokoFlow container images"
+          fi
 
       - name: Build and push the image
         run: |
@@ -94,16 +100,32 @@ jobs:
             --project "$PROJECT_ID" \
             --non-interactive
 
-      # A green deploy that still answers from the previous build has happened
-      # before. Ask the running service what it is instead of assuming.
+      # Two things have gone wrong in this repository before: a green deploy that
+      # still served the previous build, and a SPA built without its Firebase
+      # config. Ask the running service about both instead of assuming.
       - name: Smoke test the live service
         run: |
+          set -euo pipefail
           URL=$(gcloud run services describe "$SERVICE" \
             --region "$REGION" --project "$PROJECT_ID" \
             --format 'value(status.url)')
           echo "Service URL: $URL"
+
           curl -fsS "$URL/health" | tee health.json
           grep -q '"commerce"' health.json ||
             { echo "::error::/health has no commerce block - the old build is still serving."; exit 1; }
           grep -q '"durable":true' health.json ||
             { echo "::error::Commerce is not durable - COMMERCE_STATE_BACKEND is not firestore."; exit 1; }
+
+          # Proves the VITE_* build args reached the bundle. Without them the page
+          # loads, sign-in is unavailable, and nothing explains why.
+          curl -fsS "$URL/" > index.html
+          BUNDLE=$(grep -o '/assets/[^"]*\.js' index.html | head -n 1)
+          echo "Bundle: $BUNDLE"
+          curl -fsS "$URL$BUNDLE" | grep -q "$PROJECT_ID" ||
+            { echo "::error::The bundle has no Firebase project id - VITE_FIREBASE_* variables are missing or empty."; exit 1; }
+          if grep -q 'MockWebSocket' index.html; then
+            echo "::error::index.html still carries the dev HMR shim - the build did not run stripDevHmrShim."
+            exit 1
+          fi
+          echo "Smoke tests passed."

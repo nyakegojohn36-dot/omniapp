@@ -236,10 +236,12 @@ them never reaches the deploy job.
    Registry, tagged with the commit SHA.
 3. **deploy** — `gcloud run deploy` rolls the service to that tag.
 4. **rules** — `firebase deploy --only firestore:rules,firestore:indexes`.
-5. **smoke test** — calls `/health` on the deployed URL and **fails the run** if
-   the response has no `commerce` block or reports `durable:false`. A green
-   deploy that is still answering from the previous build has happened here
-   before; this step is what makes that impossible to miss.
+5. **smoke test** — calls `/health` on the deployed URL, then fetches the served
+   bundle and checks it carries the Firebase project ID and no dev HMR shim. The
+   run **fails** if commerce is not durable, if the SPA was built without its
+   `VITE_FIREBASE_*` values, or if the shim survived. A green deploy that is
+   still answering from the previous build has happened here before; this step
+   makes that impossible to miss.
 
 One Cloud Run service serves both the API and the built SPA (`server.ts` serves
 `dist` when `NODE_ENV=production`), so there is one origin and no CORS or
@@ -267,12 +269,20 @@ The deployer service account needs:
 
 ```
 roles/run.admin                roles/cloudbuild.builds.editor
-roles/iam.serviceAccountUser   roles/artifactregistry.writer
+roles/iam.serviceAccountUser   roles/artifactregistry.admin
 roles/storage.admin            roles/firebaserules.admin
 roles/datastore.indexAdmin
 ```
 
-and these APIs enabled on the project: Cloud Run, Cloud Build, Artifact Registry,
+`artifactregistry.admin` rather than `writer`: the first deploy creates the
+repository, and `writer` only covers pushing to one that already exists.
+
+The **Cloud Build service account**
+(`<project-number>@cloudbuild.gserviceaccount.com`) also needs
+`roles/artifactregistry.writer`, because the build itself is what pushes the
+image. Without it the build succeeds and the push fails with `denied`.
+
+Enable these APIs on the project: Cloud Run, Cloud Build, Artifact Registry,
 Firestore, and Identity Toolkit. A long-lived JSON key is used here because it
 needs no extra setup; Workload Identity Federation is the better long-term choice
 and drops `GCP_SA_KEY` in favour of `workload_identity_provider` plus
