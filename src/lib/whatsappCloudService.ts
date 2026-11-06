@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import type { ConversationStockPort } from './commerceState.ts';
 import { calculateOrderPricing, formatCurrency } from './pricingEngine.ts';
+import { readMpesaConfig } from './mpesaDaraja.ts';
 import { generateOrderId } from './orderService.ts';
 import type {
   Order,
@@ -610,9 +611,7 @@ export class WhatsAppCloudService {
           paymentMethod: 'MPESA_PAYBILL',
           isPaid: false,
           shippingAddress: addr,
-          shippingCarrier: addr.city.toLowerCase().includes('nairobi') ? 'Sendy / Nairobi Boda Courier' : 'Fargo Courier Kenya',
           mpesaPhoneNumber: fromNumber,
-          etimsInvoiceNumber: `eTIMS-2026-NBI-${Math.floor(10000 + Math.random() * 90000)}`,
           reservationId: res.reservation?.id,
           auditTrail: [
             {
@@ -638,21 +637,30 @@ export class WhatsAppCloudService {
         session.step = 'ORDER_PLACED';
         session.cart = undefined;
 
+        // The payment destination has to come from the configured shortcode. The
+        // hardcoded paybill this used to print was not the merchant's, so a customer
+        // following it would have paid a stranger.
+        const mpesa = readMpesaConfig();
+        const payInstruction = mpesa
+          ? `• M-PESA ${mpesa.transactionType === 'CustomerBuyGoodsOnline' ? 'Buy Goods Till' : 'Paybill'}: *${mpesa.shortCode}*\n` +
+            (mpesa.transactionType === 'CustomerBuyGoodsOnline' ? '' : `• Account: *${orderId}*\n`) +
+            `• Amount: *${formatCurrency(cart.totalCents, tenant.currency, tenant.locale)}*\n` +
+            `• Or wait for our automated STK Push prompt to ${fromNumber}!\n`
+          : `• M-PESA is not set up on this deployment yet, so no payment has been requested.\n` +
+            `• Amount due: *${formatCurrency(cart.totalCents, tenant.currency, tenant.locale)}*\n` +
+            `• We will send an STK Push prompt to ${fromNumber} once it is.\n`;
+
         const reply = `🎉 *Order Confirmed! Ref: ${orderId}*\n\n` +
           `Asante sana, *${addr.fullName}*! Your order has been placed through WhatsApp.\n\n` +
           `📦 *Order Summary:*\n` +
           `• Item: ${cart.title} (${cart.quantity}x)\n` +
-          `• Total Amount: *${formatCurrency(cart.totalCents, tenant.currency, tenant.locale)}*\n` +
-          `• KRA eTIMS Tax Invoice: Attached (16% VAT Included)\n` +
+          `• Total Amount: *${formatCurrency(cart.totalCents, tenant.currency, tenant.locale)}* (${tenant.taxRatePercent}% VAT)\n` +
+          `• Invoice: a printable shop invoice, available from your order history. It is not a KRA fiscal receipt.\n` +
           `• Delivery: ${addr.addressLine1}, ${addr.city}, Kenya\n` +
-          `• Carrier: ${newOrder.shippingCarrier}\n` +
           `• Status: *AWAITING PAYMENT*\n\n` +
-          `📱 *Lipa na M-PESA Instructions:*\n` +
-          `• M-PESA Paybill: *247247* (Account: *${orderId}*)\n` +
-          `• Or Buy Goods Till: *542910*\n` +
-          `• Amount: *${formatCurrency(cart.totalCents, tenant.currency, tenant.locale)}*\n` +
-          `• Or wait for our automated STK Push prompt to ${fromNumber}!\n\n` +
-          `Our Nairobi fulfillment center has been notified. We will update you here on WhatsApp once your Boda / Courier dispatch is live!\n\n` +
+          `📱 *Payment:*\n` +
+          payInstruction + `\n` +
+          `Your order is recorded. We will update you here on WhatsApp once it is dispatched.\n\n` +
           `Reply *TRACK ${orderId}* anytime for status updates.`;
 
         this.recordOutbound(fromNumber, customerName, reply, `createOrder("${orderId}")`, orderId);

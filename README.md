@@ -11,7 +11,9 @@ state are decided on the server; the browser only ever *asks*.
 
 ## Quick start
 
-Requires Node >= 22.12 (the test runner uses `--experimental-strip-types`).
+Requires Node >= 22.18. `npm test` passes `--experimental-strip-types` itself
+and runs on 22.12, but `npm start` runs `node server.ts` unflagged, and unflagged
+TypeScript in Node only arrived in 22.18.
 
 ```bash
 npm install
@@ -40,6 +42,8 @@ Read this before demoing.
 | Returns (claim → warehouse receipt → inspection → refund) | Real. Stock moves only on inspection; the refund needs an owner's attestation. |
 | WhatsApp channel | Real via the Meta Cloud API when configured; otherwise a clearly-labelled simulated mode. |
 | Card, Airtel Money, Pesalink | **Not implemented.** They are selectable in checkout, create an order awaiting payment, and charge nothing. |
+| KRA eTIMS fiscal receipts | **Not implemented.** Invoices are shop documents built from the persisted order. No fiscal device, no transmission to KRA, no VAT certification. |
+| Courier integration | **Not implemented.** No Sendy, Fargo or G4S account and no rider dispatch; carrier and tracking number are typed in at dispatch. |
 | AI storefront assistant | **Keyword responses, not a model.** It reads live catalogue and stock, but it is not an LLM. |
 | Subscription plans / billing | **Removed.** There is no tier, no metered AI budget and no invoice record. |
 | Browser-level UI tests | **None.** The UI is covered by typecheck and build only. |
@@ -56,7 +60,7 @@ Read this before demoing.
 | `npm run preview` | `vite preview` — static `dist` only, no API. |
 | `npm run clean` | Deletes `dist` and `server.js`. Cross-platform (node one-liner). |
 | `npm run lint` | `tsc --noEmit`. This is the whole static check; there is no separate ESLint config. |
-| `npm test` | `node --test` over `src/lib/*.test.ts`. 128 tests; 2 Firestore contract tests skip without an emulator. |
+| `npm test` | `node --test` over `src/lib/*.test.ts`. 131 tests; 2 Firestore contract tests skip without an emulator. |
 | `npm run test:emulator` | Runs the same suite inside the Firestore emulator, which un-skips those 2. |
 
 ---
@@ -192,6 +196,22 @@ The image builds `dist` and bundles `server.js`, then runs with
 statically. `MPESA_CALLBACK_URL` must be the public URL ending in
 `/api/payments/mpesa/callback`. See [docs/WHATSAPP_WEBHOOK_HOSTING.md](docs/WHATSAPP_WEBHOOK_HOSTING.md)
 for the WhatsApp side.
+
+Two things the container needs that the repository cannot supply:
+
+- **Firestore credentials.** Without them the admin SDK falls back to Application
+  Default Credentials; on Cloud Run that is the service identity, and nowhere else
+  it is nothing. Orders and returns fail closed (503) rather than queueing in
+  memory, so a missing credential is visible immediately instead of losing sales.
+- **A Firebase project.** There is no `.firebaserc` in the repository on purpose:
+  the target project is a deployment decision, not a source file. Run
+  `firebase use --add` once, or set `FIREBASE_PROJECT_ID` in the environment. A
+  committed `.firebaserc` would point every clone at one project and make
+  `firebase deploy` fail with a confusing error on any other.
+
+`index.html` carries an inline HMR shim for the preview environment. The build
+strips it (see `stripDevHmrShim` in `vite.config.ts`), so a production page keeps
+its real `window.WebSocket` and its real console errors.
 
 CI (`.github/workflows/ci.yml`) runs install → typecheck → tests → build on every
 push and pull request. It needs no secrets.

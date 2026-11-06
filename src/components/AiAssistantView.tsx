@@ -45,7 +45,7 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
     {
       id: 'msg-welcome',
       sender: 'AI',
-      text: `Jambo! I am your AI sales and customer service assistant for ${tenant.name}. I have real-time access to our Nairobi Industrial Area hub and Mombasa coastal depot inventory, M-PESA payment records, and courier dispatch tracking. How can I help you today?`,
+      text: `Jambo! I am your AI sales and customer service assistant for ${tenant.name}. I can read live stock per SKU, look up order and M-PESA records, and confirm prices with tax. How can I help you today?`,
       timestamp: new Date().toLocaleTimeString(),
     },
   ]);
@@ -109,10 +109,9 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
           orderId: found.id,
           status: found.status,
           total: formatCurrency(found.totalCents, found.currency, tenant.locale),
-          carrier: found.shippingCarrier || 'Sendy / Nairobi Boda Courier',
-          trackingNumber: found.trackingNumber || 'Pending rider dispatch',
+          carrier: found.shippingCarrier || 'not assigned yet',
+          trackingNumber: found.trackingNumber || 'not dispatched yet',
           mpesaReceipt: found.mpesaReceiptCode || 'N/A',
-          etimsInvoice: found.etimsInvoiceNumber || 'N/A',
           items: found.items.map((i) => `${i.title} (${i.quantity}x)`),
         };
       }
@@ -172,7 +171,7 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
         const prod = products.find((p) => p.sku === 'TSHIRT001');
         const priceStr = prod ? formatCurrency(prod.basePriceCents, prod.currency, tenant.locale) : 'KSh 4,800.00';
 
-        reply = `Yes, our Merino Wool Trail Crewneck T-Shirt (SKU: TSHIRT001) is currently in stock! We have ${invResult.availableStock} units available at our Nairobi Industrial Area hub for ${priceStr} (16% KRA VAT inclusive). Would you like to place an order via Lipa na M-PESA?`;
+        reply = `Yes, our Merino Wool Trail Crewneck T-Shirt (SKU: TSHIRT001) is currently in stock! We have ${invResult.availableStock} units available right now for ${priceStr}, including ${tenant.taxRatePercent}% VAT. Would you like to place an order via Lipa na M-PESA?`;
       }
       // Pattern 2: Check availability for FLASK-VAC-750 (Out of stock scenario B)
       else if (lower.includes('flask') || lower.includes('bottle') || lower.includes('flask-vac-750')) {
@@ -183,7 +182,7 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
           result: invResult,
         });
 
-        reply = `Pole sana, the Vacuum Thermal Trail Flask (SKU: FLASK-VAC-750) is currently out of stock across our Nairobi and Mombasa depots. I can alert you as soon as our new shipment arrives, or suggest our Alpine Expedition Weatherproof Parka (JKT-ALPINE-09) instead. Which would you prefer?`;
+        reply = `Pole sana, the Vacuum Thermal Trail Flask (SKU: FLASK-VAC-750) is currently out of stock. I can alert you as soon as our new shipment arrives, or suggest our Alpine Expedition Weatherproof Parka (JKT-ALPINE-09) instead. Which would you prefer?`;
       }
       // Pattern 3: Excessive quantity check (Scenario C: requested 10 units of BNIE-RIBBED-01)
       else if (lower.includes('beanie') || lower.includes('watch cap') || lower.includes('bnie-ribbed-01')) {
@@ -195,9 +194,9 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
         });
 
         if (lower.includes('10') || lower.includes('15')) {
-          reply = `You requested 10+ units of the Ribbed Merino Watch Cap (SKU: BNIE-RIBBED-01), but our Nairobi hub currently has only ${invResult.availableStock} units available for instant dispatch. Would you like to order the ${invResult.availableStock} available units today, or connect with our Nairobi wholesale desk for our incoming consignment?`;
+          reply = `You requested 10+ units of the Ribbed Merino Watch Cap (SKU: BNIE-RIBBED-01), but we currently have only ${invResult.availableStock} units available for instant dispatch. Would you like to order the ${invResult.availableStock} available units today, or speak with our wholesale desk about the incoming consignment?`;
         } else {
-          reply = `The Ribbed Merino Watch Cap (SKU: BNIE-RIBBED-01) is in stock with ${invResult.availableStock} units available at KSh 2,800.00. Same-day boda delivery is available across Nairobi!`;
+          reply = `The Ribbed Merino Watch Cap (SKU: BNIE-RIBBED-01) is in stock with ${invResult.availableStock} units available at KSh 2,800.00. Delivery timing is confirmed at checkout.`;
         }
       }
       // Pattern 4: Order tracking (e.g. ORD-000008 or ORD-000006)
@@ -214,15 +213,14 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
 
         if (trackResult.found) {
           const mpesaNote = trackResult.mpesaReceipt !== 'N/A' ? ` · M-PESA Code: ${trackResult.mpesaReceipt}` : '';
-          const etimsNote = trackResult.etimsInvoice !== 'N/A' ? ` · eTIMS: ${trackResult.etimsInvoice}` : '';
-          reply = `Found your order ${trackResult.orderId}! Status: "${trackResult.status}". Dispatched via ${trackResult.carrier} (Tracking: ${trackResult.trackingNumber}). Total value: ${trackResult.total}${mpesaNote}${etimsNote}.`;
+          reply = `Found your order ${trackResult.orderId}! Status: "${trackResult.status}". Carrier: ${trackResult.carrier} (tracking: ${trackResult.trackingNumber}). Total value: ${trackResult.total}${mpesaNote}.`;
         } else {
           reply = `I could not locate an order matching "${targetId}". Please verify your order number format (e.g. ORD-000008) or let me connect you with support.`;
         }
       }
       // Pattern 5: Returns & Refunds policy
       else if (lower.includes('return') || lower.includes('refund')) {
-        reply = `We offer a 14-day return policy across Kenya for unworn gear with tags intact. In Nairobi, our Sendy/Boda courier can collect the parcel directly from your location, or you can drop it off at our Industrial Area hub. Refunds are reversed directly to your M-PESA phone number within 24 hours of inspection.`;
+        reply = `We offer a 14-day return policy for unworn goods with tags intact. You can raise a return request from the order once it has been delivered, and once the item is back with us and inspected, the refund goes to the original payment method.`;
       }
       // Fallback: General catalog search
       else {
@@ -274,11 +272,11 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
           AI Customer Service & Sales Assistant
         </h1>
         <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
-          <span>Real-Time Catalog & Warehouse Synchronization</span>
+          <span>Answers grounded in live inventory and orders</span>
           <span aria-hidden="true">·</span>
-          <span>Nairobi Industrial Area & Mombasa Coastal Depots</span>
+          <span>Reads stock per SKU before quoting</span>
           <span aria-hidden="true">·</span>
-          <span>Daraja M-PESA & eTIMS Grounded</span>
+          <span>No fiscal receipts are issued here</span>
         </div>
       </div>
 

@@ -26,6 +26,7 @@ import { getFirestoreDb } from './firebaseAdmin.ts';
 import type { Product, StockReservation, WarehouseInventory } from './types.ts';
 import type { ReservationResult } from './inventoryEngine.ts';
 import {
+  CommerceStateUnavailableError,
   applyAdjustmentToRow,
   applyCommitToRow,
   applyReleaseToRow,
@@ -48,17 +49,9 @@ const PRODUCTS = 'products';
 
 const SWEEP_LIMIT = 20;
 
-export class CommerceStateUnavailableError extends Error {
-  // Declared explicitly (not as a parameter property) because Node's
-  // --experimental-strip-types cannot parse TypeScript parameter properties.
-  originalError?: unknown;
-
-  constructor(message: string, originalError?: unknown) {
-    super(message);
-    this.name = 'CommerceStateUnavailableError';
-    this.originalError = originalError;
-  }
-}
+// Re-exported so existing callers (server.ts, the tests) keep importing the
+// error from the adapter they already depend on.
+export { CommerceStateUnavailableError };
 
 function docId(key: string): string {
   return createHash('sha256').update(key).digest('hex');

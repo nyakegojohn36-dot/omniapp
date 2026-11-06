@@ -446,11 +446,11 @@ export const LoginView: React.FC<LoginViewProps> = ({
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>&copy; 2026 SokoFlow · Every order. Every channel. One clear view.</span>
           <div className="flex items-center gap-3">
-            <span>KRA eTIMS Tax Compliant</span>
+            <span>Shop invoices, not KRA fiscal receipts</span>
             <span aria-hidden="true">·</span>
-            <span>Daraja M-PESA Integrated</span>
+            <span>M-PESA STK Push when Daraja is configured</span>
             <span aria-hidden="true">·</span>
-            <span>256-Bit SSL Encrypted</span>
+            <span>TLS in transit</span>
           </div>
         </div>
       </footer>

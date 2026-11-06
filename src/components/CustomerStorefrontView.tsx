@@ -115,7 +115,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   >([
     {
       sender: 'AI',
-      text: `Jambo! I'm your Safari Peak Kenya shopping concierge. Looking for trail apparel, Mt. Kenya expedition gear, sizes, or checking stock in our Nairobi & Mombasa warehouses? Ask me anything!`,
+      text: `Jambo! I'm your shopping concierge. Looking for trail apparel, expedition gear, sizes, or checking live stock? Ask me anything!`,
     },
   ]);
   const [aiChatInput, setAiChatInput] = useState('');
@@ -474,7 +474,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
           ...prev,
           {
             sender: 'AI',
-            text: `The ${prod.title} (KSh ${(prod.basePriceCents / 100).toLocaleString('en-KE')}) is insulated with 800-fill down, engineered specifically for high-altitude expeditions like Mt. Kenya Point Lenana or the Aberdares. Stock is ready at our Nairobi Industrial Area hub!`,
+            text: `The ${prod.title} (KSh ${(prod.basePriceCents / 100).toLocaleString('en-KE')}) is insulated with 800-fill down, built for high-altitude expeditions. Live stock for your size is shown on the product card.`,
             recommendedSku: prod.sku,
           },
         ]);
@@ -882,31 +882,25 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                       that decision. This renders nothing for any other status. */}
                   <ReturnRequestAction tenant={tenant} order={ord} />
 
-                  {/* Carrier & M-PESA reference */}
+                  {/* Carrier & M-PESA reference. Both are recorded by fulfilment and
+                      by the payment callback, so before either happens they are empty. */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
                     <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
                       <div className="flex items-center gap-1.5 text-slate-600">
                         <Truck className="w-3.5 h-3.5" />
-                        <span>{ord.shippingCarrier || 'Sendy / Nairobi Boda Courier'}</span>
+                        <span>{ord.shippingCarrier || 'Carrier not assigned'}</span>
                       </div>
                       <div className="text-slate-800 font-bold">
-                        {ord.trackingNumber || 'Assigned to Rider'}
+                        {ord.trackingNumber || 'Not dispatched'}
                       </div>
                     </div>
 
-                    {(ord.mpesaReceiptCode || ord.etimsInvoiceNumber) && (
+                    {ord.mpesaReceiptCode && (
                       <div className="p-2.5 bg-emerald-50/60 border border-emerald-200 rounded-xl flex items-center justify-between">
-                        {ord.mpesaReceiptCode && (
-                          <div className="flex items-center gap-1 text-emerald-800 font-bold">
-                            <span>M-PESA:</span>
-                            <span>{ord.mpesaReceiptCode}</span>
-                          </div>
-                        )}
-                        {ord.etimsInvoiceNumber && (
-                          <div className="text-slate-700 text-[11px] font-semibold">
-                            <span>Invoice ref:</span> {ord.etimsInvoiceNumber}
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1 text-emerald-800 font-bold">
+                          <span>M-PESA:</span>
+                          <span>{ord.mpesaReceiptCode}</span>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1414,7 +1408,8 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                       <div>
                         <div className="font-bold text-slate-900">M-PESA Paybill / Buy Goods Till</div>
                         <div className="text-[11px] text-slate-500">
-                          Paybill: <span className="font-mono font-bold text-slate-800">247247</span> (Acc: <span className="font-mono font-bold text-slate-800">SAFARI</span>) · Till: <span className="font-mono font-bold text-slate-800">542910</span>
+                          Paid against the shop's M-PESA shortcode. Nothing is charged online:
+                          the order stays unpaid until the payment is verified.
                         </div>
                       </div>
                     </div>
@@ -1458,7 +1453,7 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                       <div>
                         <div className="font-bold text-slate-900">Cash / M-PESA on Delivery</div>
                         <div className="text-[11px] text-slate-500">
-                          Hand payment to Sendy/Boda rider upon parcel receipt in Nairobi
+                          Hand payment to the delivery rider when the parcel arrives
                         </div>
                       </div>
                     </div>

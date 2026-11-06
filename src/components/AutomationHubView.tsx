@@ -91,13 +91,15 @@ export const AutomationHubView: React.FC<AutomationHubViewProps> = ({
       processed: true,
       status: 'SUCCESS',
       receivedAt: now,
-      payload: { orderId: 'ORD-000008', mpesaReceiptCode: `QK${Math.floor(10000000 + Math.random() * 90000000)}`, amount: 1143600, currency: 'KES' },
+      // SIM- prefix: this is a simulator, and a bare "QK..." value in the event log
+      // is indistinguishable from a real Safaricom receipt.
+      payload: { orderId: 'ORD-000008', mpesaReceiptCode: `SIM-QK${Math.floor(10000000 + Math.random() * 90000000)}`, amount: 1143600, currency: 'KES' },
     };
 
     setEvents((prev) => [record, ...prev]);
     setLastResult({
       status: 'SUCCESS',
-      message: `Verified Safaricom Daraja STK Push callback for ORD-000008 (KSh 11,436.00). KRA eTIMS invoice generated and order transitioned to CONFIRMED.`,
+      message: `Simulated Safaricom Daraja STK Push callback for ORD-000008 (KSh 11,436.00). Order transitioned to CONFIRMED. No real payment took place.`,
     });
   };
 
@@ -118,7 +120,7 @@ export const AutomationHubView: React.FC<AutomationHubViewProps> = ({
           <span aria-hidden="true">·</span>
           <span>Idempotent Webhook Processing</span>
           <span aria-hidden="true">·</span>
-          <span>KRA eTIMS & Boda Dispatch Event Orchestration</span>
+          <span>Replay-safe Event Orchestration</span>
         </div>
       </div>
 
@@ -130,12 +132,13 @@ export const AutomationHubView: React.FC<AutomationHubViewProps> = ({
               <Webhook className="w-4 h-4 text-emerald-600" />
               <span>Safaricom Daraja M-PESA</span>
             </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
-              Active C2B & STK
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+              Needs credentials
             </span>
           </div>
           <p className="text-xs text-slate-500">
-            Paybill 247247 & Till 542910 webhook callback sync. Idempotency window: 60 minutes.
+            STK Push callback settlement against the shortcode in MPESA_SHORTCODE. Until the
+            Daraja credentials are set, payment routes answer 503 rather than inventing a receipt.
           </p>
         </div>
 
@@ -145,12 +148,13 @@ export const AutomationHubView: React.FC<AutomationHubViewProps> = ({
               <Cpu className="w-4 h-4 text-blue-600" />
               <span>n8n Kenya Orchestrator</span>
             </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
-              Workflow Active
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+              Not configured
             </span>
           </div>
           <p className="text-xs text-slate-500">
-            Automates WhatsApp order receipts, KRA eTIMS invoice generation, and low-stock supplier reorders.
+            Would automate WhatsApp order receipts, invoice generation and low-stock supplier
+            reorders. No n8n instance is wired up on this deployment.
           </p>
         </div>
 
@@ -158,14 +162,15 @@ export const AutomationHubView: React.FC<AutomationHubViewProps> = ({
           <div className="flex items-center justify-between text-xs font-semibold">
             <span className="text-slate-900 flex items-center gap-1.5">
               <Layers className="w-4 h-4 text-violet-600" />
-              <span>Sendy & Fargo Courier Adapter</span>
+              <span>Courier Adapter</span>
             </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-800">
-              Connected
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+              Not implemented
             </span>
           </div>
           <p className="text-xs text-slate-500">
-            Nairobi same-day Boda rider dispatch and upcountry G4S/Fargo tracking milestone webhook sync.
+            No rider dispatch and no carrier milestone feed: SokoFlow holds no Sendy, Fargo or
+            G4S account. Carrier and tracking number are recorded by hand at dispatch.
           </p>
         </div>
       </div>

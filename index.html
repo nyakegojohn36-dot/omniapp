@@ -2,8 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- DEV_HMR_SHIM_START -->
     <script>
       // Runtime Environment: "HMR: Disabled. Ignore WebSocket errors."
+      // Preview-only. vite.config.ts strips this block from production builds,
+      // because swallowing WebSocket errors would hide real ones.
       (function() {
         if (typeof window !== 'undefined' && window.WebSocket) {
           var RealWebSocket = window.WebSocket;
@@ -89,6 +92,7 @@
         }, true);
       })();
     </script>
+    <!-- DEV_HMR_SHIM_END -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SokoFlow | Every order. Every channel. One clear view.</title>
     <meta name="description" content="Run your business from one place. SokoFlow helps growing retailers manage orders, inventory, customer conversations, and fulfilment across sales channels—with AI-assisted support to help teams serve customers faster." />

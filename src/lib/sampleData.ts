@@ -399,8 +399,7 @@ export const SEED_ORDERS: Order[] = [
     paymentMethod: 'MPESA_EXPRESS',
     mpesaReceiptCode: 'QKD73HD892',
     mpesaPhoneNumber: '254752720933',
-    etimsInvoiceNumber: 'eTIMS-2026-NBI-00912',
-    shippingCarrier: 'Sendy / Nairobi Boda Courier',
+    shippingCarrier: 'Same-day courier',
     isPaid: false,
     shippingAddress: {
       fullName: 'Sarah Nekesa',
@@ -456,9 +455,8 @@ export const SEED_ORDERS: Order[] = [
     isPaid: true,
     paymentTransactionRef: 'mpesa_daraja_RKG82LM904',
     mpesaReceiptCode: 'RKG82LM904',
-    etimsInvoiceNumber: 'eTIMS-2026-NBI-00911',
-    shippingCarrier: 'Fargo Courier Kenya',
-    trackingNumber: 'FRG-254-8891',
+    shippingCarrier: 'Intercity courier',
+    trackingNumber: 'TRK-254-8891',
     shippingAddress: {
       fullName: 'Brian Ochieng',
       addressLine1: 'Links Road, Nyali',
@@ -511,9 +509,8 @@ export const SEED_ORDERS: Order[] = [
     isPaid: true,
     paymentTransactionRef: 'mpesa_stk_QLJ19MN201',
     mpesaReceiptCode: 'QLJ19MN201',
-    etimsInvoiceNumber: 'eTIMS-2026-ELD-00441',
-    shippingCarrier: 'G4S Kenya Parcel',
-    trackingNumber: 'G4S-KE-40912',
+    shippingCarrier: 'Upcountry parcel carrier',
+    trackingNumber: 'TRK-KE-40912',
     shippingAddress: {
       fullName: 'Faith Cherotich',
       addressLine1: 'Uganda Road, Pioneer',
@@ -531,7 +528,7 @@ export const SEED_ORDERS: Order[] = [
         toStatus: 'PROCESSING',
         actor: 'marcus.k@safaripeak.co.ke',
         actorRole: 'FULFILLMENT_STAFF',
-        reason: 'Order picked at Nairobi Main Hub; dispatched to G4S Kenya dispatch queue.',
+        reason: 'Order picked at the main warehouse and handed to the courier.',
       },
       {
         id: 'aud-602',
@@ -540,19 +537,19 @@ export const SEED_ORDERS: Order[] = [
         toStatus: 'READY_FOR_DISPATCH',
         actor: 'marcus.k@safaripeak.co.ke',
         actorRole: 'FULFILLMENT_STAFF',
-        reason: 'Package verified, KRA eTIMS invoice eTIMS-2026-ELD-00441 enclosed.',
+        reason: 'Package verified and sealed for dispatch.',
       },
       {
         id: 'aud-603',
         timestamp: '2026-10-15T14:40:00Z',
         fromStatus: 'READY_FOR_DISPATCH',
         toStatus: 'SHIPPED',
-        actor: 'g4s-carrier-adapter',
+        actor: 'courier-feed',
         actorRole: 'SYSTEM',
-        reason: 'G4S Kenya courier picked up package; tracking G4S-KE-40912 active.',
+        reason: 'Courier picked up the package; tracking TRK-KE-40912 is active.',
         metadata: {
-          shippingCarrier: 'G4S Kenya Parcel',
-          trackingNumber: 'G4S-KE-40912',
+          shippingCarrier: 'Upcountry parcel carrier',
+          trackingNumber: 'TRK-KE-40912',
         },
       },
     ],
@@ -763,7 +760,7 @@ export const SEED_SUPPORT_CASES: SupportCase[] = [
     customerEmail: 'faith.c@gmail.com',
     customerPhone: '+254 722 987654',
     orderId: 'ORD-000006',
-    subject: 'KRA eTIMS digital tax receipt confirmation for business expense',
+    subject: 'Request for a printable invoice for a business expense claim',
     status: 'IN_PROGRESS',
     priority: 'LOW',
     assignedStaffId: 'staff-supp-02',
@@ -772,78 +769,85 @@ export const SEED_SUPPORT_CASES: SupportCase[] = [
     messages: [
       {
         sender: 'CUSTOMER',
-        text: 'Does my order receipt have the KRA eTIMS invoice QR code for filing business tax deductions?',
+        text: 'Can I get a printable invoice for ORD-000006? I need it for an expense claim at work.',
         timestamp: '2026-10-15T15:20:00Z',
       },
       {
         sender: 'AI_ASSISTANT',
-        text: 'Hello Faith! Yes, your order ORD-000006 includes KRA eTIMS invoice eTIMS-2026-ELD-00441 with full 16% VAT breakdown (KSh 448.00) compliant with KRA tax requirements.',
+        text: 'Hello Faith! ORD-000006 has a printable invoice in your order history with the VAT line broken out. It is a shop invoice, not a KRA fiscal receipt, so please check whether your employer accepts it for the claim.',
         timestamp: '2026-10-15T15:20:45Z',
       },
     ],
   },
 ];
 
+/**
+ * Connector previews for the Automation Hub.
+ *
+ * These are static descriptions of what the code can do, not live connection
+ * state. Statuses are honest: ATTENTION means the connector works only once its
+ * environment variables are set, DISCONNECTED means no integration exists. No
+ * entry carries an invented shortcode, PIN or account number.
+ */
 export const SEED_INTEGRATIONS: IntegrationConfig[] = [
   {
     id: 'int-mpesa',
     name: 'Safaricom M-PESA Daraja API',
     category: 'PAYMENT',
-    description: 'Lipa na M-PESA Online (STK Push), C2B Paybill (247247), and Buy Goods Till integrations.',
-    status: 'CONNECTED',
+    description:
+      'Lipa na M-PESA Online (STK Push) plus callback settlement against the configured shortcode.',
+    status: 'ATTENTION',
     icon: 'CreditCard',
-    lastSyncAt: 'Just now',
-    details: 'Daraja 2.0 Live (Shortcode: 247247). Instant STK Push callback active.',
+    lastSyncAt: 'Awaiting credentials',
+    details:
+      'Needs MPESA_CONSUMER_KEY, MPESA_PASSKEY and MPESA_SHORTCODE. Without them STK push answers 503 rather than inventing a receipt.',
   },
   {
-    id: 'int-etims',
-    name: 'KRA eTIMS Tax Compliance Engine',
-    category: 'PAYMENT',
-    description: 'Automated 16% VAT invoicing, KRA invoice serials, and real-time electronic fiscal device transmission.',
+    id: 'int-invoice',
+    name: 'Order invoice (printable)',
+    category: 'AUTOMATION',
+    description:
+      'Renders an invoice from the persisted order: line items, discount, shipping and the tenant tax rate.',
     status: 'CONNECTED',
     icon: 'ShieldCheck',
-    lastSyncAt: '2 mins ago',
-    details: 'KRA PIN: P051982731A. Real-time fiscal receipts transmitted.',
+    lastSyncAt: 'Built in',
+    details:
+      'A shop document only. SokoFlow holds no eTIMS fiscal device and does not file this with KRA.',
   },
   {
     id: 'int-whatsapp',
     name: 'WhatsApp Business Cloud API',
     category: 'CHANNELS',
-    description: 'Automated M-PESA order confirmations, live customer catalog browsing, and instant WhatsApp chat.',
-    status: 'CONNECTED',
+    description:
+      'Inbound message handling and replies over the Meta Cloud API, with a simulated mode when it is not configured.',
+    status: 'ATTENTION',
     icon: 'MessageSquare',
-    lastSyncAt: 'Just now',
-    details: 'Kenyan Verified Line (+254 752 720933). AI sales assistant grounded.',
+    lastSyncAt: 'Awaiting credentials',
+    details:
+      'Needs WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID. Otherwise the channel runs in clearly-labelled simulated mode.',
   },
   {
-    id: 'int-boda',
-    name: 'Sendy & Nairobi Boda Delivery Network',
+    id: 'int-delivery',
+    name: 'Courier dispatch',
     category: 'SHIPPING',
-    description: 'Same-day express rider dispatch across Nairobi, Kiambu, Machakos, and Kajiado.',
-    status: 'CONNECTED',
+    description:
+      'Carrier and tracking number are free-text fields on the order, entered by fulfilment staff.',
+    status: 'DISCONNECTED',
     icon: 'Truck',
-    lastSyncAt: '8 mins ago',
-    details: 'Instant rider dispatch API connected. Average Nairobi delivery: 45 mins.',
+    lastSyncAt: 'No courier API',
+    details:
+      'There is no third-party delivery integration: no rider dispatch, no waypoint feed, no carrier account.',
   },
   {
-    id: 'int-fargo',
-    name: 'Fargo Courier & G4S Kenya',
-    category: 'SHIPPING',
-    description: 'Upcountry parcel distribution network covering all 47 Kenyan counties with real-time waypoint tracking.',
-    status: 'CONNECTED',
-    icon: 'Truck',
-    lastSyncAt: '15 mins ago',
-    details: 'Account #FRG-NBI-8812. Overnight delivery to 47 counties active.',
-  },
-  {
-    id: 'int-pesalink',
-    name: 'Pesalink & Kenyan Bank Rails',
+    id: 'int-unimplemented-rails',
+    name: 'Card, Airtel Money and Pesalink',
     category: 'PAYMENT',
-    description: 'Real-time bank transfers via Equity Bank, KCB, NCBA Loop, and Co-operative Bank.',
-    status: 'CONNECTED',
+    description: 'These rails are selectable at checkout but no processor is connected.',
+    status: 'DISCONNECTED',
     icon: 'Store',
-    lastSyncAt: '1 hour ago',
-    details: 'Direct clearing via Central Bank of Kenya (CBK) Pesalink switch.',
+    lastSyncAt: 'Not implemented',
+    details:
+      'Choosing one creates an order awaiting payment and charges nothing. Only M-Pesa settles automatically.',
   },
 ];
 

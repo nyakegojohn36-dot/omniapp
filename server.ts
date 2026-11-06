@@ -1945,6 +1945,18 @@ app.get('/terms', (_req: Request, res: Response) => {
 </html>`);
 });
 
+// A path under /api that the app does not implement answers JSON 404, not the
+// SPA. Without this the request fell through to the catch-all route and a client
+// asking for a renamed or misspelled endpoint got index.html with a 200, which
+// fails later as a parse error instead of here as "no such endpoint".
+//
+// Callers without a token still get 401 first: authentication runs on the whole
+// /api prefix before routing, and that is deliberate. A 404 before the token
+// check would let anyone map which endpoints exist.
+app.all('/api/*', (_req: Request, res: Response) => {
+  res.status(404).json({ error: 'No API endpoint matches that path.' });
+});
+
 app.use((error: Error, _req: Request, res: Response, next: NextFunction) => {
   console.error('[API] Request failed.', error);
   if (res.headersSent) return next(error);

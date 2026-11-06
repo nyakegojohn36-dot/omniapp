@@ -170,8 +170,8 @@ export interface Order {
   mpesaMerchantRequestId?: string;
   /** The exact shilling amount Safaricom was asked to collect. */
   mpesaAmountKes?: number;
-  etimsInvoiceNumber?: string; // e.g. eTIMS-2026-NBI-00912
-  shippingCarrier?: string; // e.g. Fargo Courier, Sendy Boda, G4S Kenya, Pick-up Mtaani
+  /** Free text, entered by fulfilment staff when the parcel is handed over. */
+  shippingCarrier?: string;
   trackingNumber?: string;
   shippingAddress: OrderAddress;
   auditTrail: OrderAuditEntry[];

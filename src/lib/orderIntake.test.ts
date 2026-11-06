@@ -203,14 +203,18 @@ test('order intake: merges duplicate SKU lines into one reservation', async () =
   assert.equal(result.reservationIds.length, 1);
 });
 
-test('order intake: uses the server order sequence for the id and eTIMS reference', async () => {
+test('order intake: uses the server order sequence for the id only', async () => {
   const deps = warehouse();
   const result = await createOrderFromIntake(request(), deps);
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.order.id, 'ORD-000042');
-  assert.equal(result.order.etimsInvoiceNumber, 'eTIMS-2026-NBI-00042');
+  // No fiscal reference and no payment receipt are invented at intake. The fields
+  // are gone from the type, so this checks the object that actually gets persisted.
+  const persisted = result.order as unknown as Record<string, unknown>;
+  assert.equal(persisted.etimsInvoiceNumber, undefined);
+  assert.equal(persisted.mpesaReceiptCode, undefined);
 });
 
 test('order intake: rejects a missing or invalid shipping address', async () => {
@@ -249,11 +253,16 @@ test('order intake: resolves a variant SKU to its parent product and variant pri
   assert.equal(result.order.items[0].unitPriceCents, navyMedium.priceCents);
 });
 
-test('order intake: picks the courier from the destination city', async () => {
+test('order intake: leaves the carrier to fulfilment instead of inventing one', async () => {
+  // The destination city used to pick a courier name and a tracking number here.
+  // Both were fabricated: no courier had been booked. Fulfilment records the real
+  // carrier when the parcel is actually handed over.
   const nairobi = warehouse();
   const nairobiOrder = await createOrderFromIntake(request(), nairobi);
   assert.equal(nairobiOrder.ok, true);
-  if (nairobiOrder.ok) assert.match(nairobiOrder.order.shippingCarrier || '', /Nairobi Boda/);
+  if (!nairobiOrder.ok) return;
+  assert.equal(nairobiOrder.order.shippingCarrier, undefined);
+  assert.equal(nairobiOrder.order.trackingNumber, undefined);
 
   const upcountry = warehouse();
   const upcountryOrder = await createOrderFromIntake(
@@ -261,5 +270,6 @@ test('order intake: picks the courier from the destination city', async () => {
     upcountry
   );
   assert.equal(upcountryOrder.ok, true);
-  if (upcountryOrder.ok) assert.match(upcountryOrder.order.shippingCarrier || '', /Fargo/);
+  if (!upcountryOrder.ok) return;
+  assert.equal(upcountryOrder.order.shippingCarrier, undefined);
 });

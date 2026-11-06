@@ -14,6 +14,26 @@
 import type { Product, StockReservation, WarehouseInventory } from './types.ts';
 import type { ReservationResult } from './inventoryEngine.ts';
 
+/**
+ * Raised when the durable store cannot answer, so the API returns 503 instead
+ * of serving a second, in-process version of the truth.
+ *
+ * It lives in this leaf module rather than in firestoreCommerceState.ts because
+ * firebaseAdmin.ts also needs it for order and return records: importing it from
+ * the Firestore adapter would make the two modules import each other.
+ */
+export class CommerceStateUnavailableError extends Error {
+  // Declared explicitly (not as a parameter property) because Node's
+  // --experimental-strip-types cannot parse TypeScript parameter properties.
+  originalError?: unknown;
+
+  constructor(message: string, originalError?: unknown) {
+    super(message);
+    this.name = 'CommerceStateUnavailableError';
+    this.originalError = originalError;
+  }
+}
+
 export interface AvailabilitySnapshot {
   sku: string;
   physicalStock: number;

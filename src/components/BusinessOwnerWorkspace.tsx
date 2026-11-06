@@ -224,7 +224,6 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
       'Status',
       'Payment Method',
       'M-PESA Code',
-      'KRA eTIMS Number',
       'Items Count',
       'Total KES',
       'Carrier',
@@ -238,10 +237,9 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
       o.status,
       o.paymentMethod || 'M-PESA STK Push',
       o.mpesaReceiptCode || 'PENDING',
-      o.etimsInvoiceNumber || 'PENDING',
       o.items.reduce((sum, item) => sum + item.quantity, 0),
       (o.totalCents / 100).toFixed(2),
-      `"${(o.shippingCarrier || 'Sendy / Boda Express').replace(/"/g, '""')}"`,
+      `"${(o.shippingCarrier || 'Not recorded').replace(/"/g, '""')}"`,
       o.trackingNumber || 'PENDING',
     ]);
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
@@ -1771,6 +1769,14 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {integrations.map((item) => {
                     const isConnected = item.status === 'CONNECTED';
+                    // ATTENTION means the code path exists but its credentials are unset.
+                    const needsConfig = item.status === 'ATTENTION';
+                    const badgeClass = isConnected
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : needsConfig
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-slate-100 text-slate-500';
+                    const badgeLabel = isConnected ? 'Demo connected' : needsConfig ? 'Needs configuration' : 'Not connected';
                     return (
                       <div
                         key={item.id}
@@ -1778,14 +1784,8 @@ export const BusinessOwnerWorkspace: React.FC<BusinessOwnerWorkspaceProps> = ({
                       >
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                isConnected
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-slate-100 text-slate-500'
-                              }`}
-                            >
-                              {isConnected ? 'Demo connected' : 'Not connected'}
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${badgeClass}`}>
+                              {badgeLabel}
                             </span>
                           </div>
                           <h4 className="font-bold text-sm text-slate-900">{item.name}</h4>

@@ -190,7 +190,7 @@ export const OrderStateMachineView: React.FC<OrderStateMachineViewProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                 >
                   <FileText className="w-3.5 h-3.5 text-emerald-700" />
-                  <span>KRA eTIMS Invoice</span>
+                  <span>Printable Invoice</span>
                 </button>
               </div>
             </div>
@@ -340,17 +340,13 @@ export const OrderStateMachineView: React.FC<OrderStateMachineViewProps> = ({
                       onClick={() =>
                         handleExecuteTransition(
                           'SHIPPED',
-                          'Sendy / G4S courier driver loaded parcel onto outbound dispatch vehicle.',
-                          {
-                            shippingCarrier: 'Sendy Kenya Express',
-                            trackingNumber: `SNDY-NBI-${Math.floor(100000 + Math.random() * 900000)}`,
-                          }
+                          'Parcel handed to the dispatch courier.'
                         )
                       }
                       className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors shadow-2xs flex items-center gap-1.5"
                     >
                       <Truck className="w-3.5 h-3.5" />
-                      <span>Scan Courier Label &rarr; SHIPPED</span>
+                      <span>Mark Dispatched &rarr; SHIPPED</span>
                     </button>
                   )}
 
@@ -445,7 +441,7 @@ export const OrderStateMachineView: React.FC<OrderStateMachineViewProps> = ({
         </div>
       </div>
 
-      {/* Official KRA eTIMS Tax Invoice Modal */}
+      {/* Printable shop-invoice modal. It is not a KRA fiscal receipt. */}
       {showInvoiceModal && selectedOrder && (
         <KraTaxInvoiceModal
           order={selectedOrder}

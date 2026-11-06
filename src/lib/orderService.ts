@@ -173,15 +173,14 @@ export function createCustomerOrder(params: CreateOrderParams): CreateOrderResul
   }
 
   const primaryReservationId = reservationsMade[0];
-  const generatedMpesaReceipt =
-    params.mpesaReceiptCode ||
-    (paymentMethod === 'MPESA_EXPRESS' || paymentMethod === 'MPESA_PAYBILL'
-      ? `QK${Math.floor(10000000 + Math.random() * 90000000)}`
-      : undefined);
-  const etimsNumber = `eTIMS-2026-NBI-${String(existingOrderIdCount + 1).padStart(5, '0')}`;
-  const defaultCarrier = shippingAddress.city?.toLowerCase().includes('nairobi')
-    ? 'Sendy / Nairobi Boda Courier'
-    : 'Fargo Courier Kenya';
+  // A receipt code is evidence that Safaricom took the money, so it is only ever
+  // the one that arrived through the payment callback. The random "QK..." value
+  // this used to mint was indistinguishable from a real one in the UI and in the
+  // CSV export, which is exactly what makes a counterfeit useful.
+  const mpesaReceiptCode = params.mpesaReceiptCode;
+
+  // No carrier is chosen here either. Picking one from the destination city named
+  // a courier that had never been booked; fulfilment records the real one.
 
   const order: Order = {
     id: generatedId,
@@ -191,9 +190,7 @@ export function createCustomerOrder(params: CreateOrderParams): CreateOrderResul
     customerEmail,
     customerPhone: customerPhone || params.mpesaPhoneNumber,
     mpesaPhoneNumber: params.mpesaPhoneNumber,
-    mpesaReceiptCode: generatedMpesaReceipt,
-    etimsInvoiceNumber: etimsNumber,
-    shippingCarrier: defaultCarrier,
+    mpesaReceiptCode,
     items: orderItemsSnapshot,
     currency: tenant.currency,
     subtotalCents: pricing.subtotalCents,
@@ -205,7 +202,7 @@ export function createCustomerOrder(params: CreateOrderParams): CreateOrderResul
     paymentMethod,
     isPaid,
     paymentTransactionRef: isPaid
-      ? generatedMpesaReceipt || `tx_auth_${Date.now()}`
+      ? mpesaReceiptCode || `tx_auth_${Date.now()}`
       : undefined,
     shippingAddress,
     reservationId: primaryReservationId,
@@ -219,10 +216,10 @@ export function createCustomerOrder(params: CreateOrderParams): CreateOrderResul
         actorRole: 'CUSTOMER',
         reason: isPaid
           ? paymentMethod === 'MPESA_EXPRESS'
-            ? `Order confirmed & M-PESA STK Push verified (${pricing.formattedTotal}, Ref: ${generatedMpesaReceipt}). KRA eTIMS invoice ${etimsNumber} issued. Stock committed.`
+            ? `Order confirmed & M-PESA payment verified (${pricing.formattedTotal}, Ref: ${mpesaReceiptCode || 'none supplied'}). Stock committed.`
             : `Checkout placed & payment authorized (${pricing.formattedTotal}). Stock committed.`
           : paymentMethod === 'CASH_ON_DELIVERY'
-          ? `Order placed with Cash / M-PESA on Delivery terms. Carrier: ${defaultCarrier}. Stock committed.`
+          ? 'Order placed with Cash / M-PESA on Delivery terms. Stock committed.'
           : `Order placed. Awaiting M-PESA / payment confirmation. Stock reserved for ${tenant.reservationTTLMinutes} mins.`,
       },
     ],

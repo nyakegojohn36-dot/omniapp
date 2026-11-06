@@ -288,12 +288,14 @@ export async function createOrderFromIntake(
     }
   }
 
-  const city = request.shippingAddress.city?.toLowerCase() || '';
-  const carrier = city.includes('nairobi') ? 'Sendy / Nairobi Boda Courier' : 'Fargo Courier Kenya';
-  const etimsInvoiceNumber = `eTIMS-2026-NBI-${String(sequence).padStart(5, '0')}`;
-  // No receipt code is generated here. A receipt is issued by Safaricom and
+  // No fiscal reference is minted here. SokoFlow holds no eTIMS device, so an
+  // "eTIMS-..." number on a real order would be a counterfeit tax document.
+  //
+  // No receipt code is generated either. A receipt is issued by Safaricom and
   // arrives through the payment callback; inventing one would be evidence for a
   // payment that never happened.
+  //
+  // The carrier is left unset: fulfilment names it when the parcel is handed over.
 
   const order: Order = {
     id: orderId,
@@ -315,8 +317,6 @@ export async function createOrderFromIntake(
     paymentTransactionRef: undefined,
     mpesaReceiptCode: undefined,
     mpesaPhoneNumber: request.mpesaPhoneNumber,
-    etimsInvoiceNumber,
-    shippingCarrier: carrier,
     shippingAddress: request.shippingAddress,
     reservationId: reservationIds[0],
     auditTrail: [
@@ -328,7 +328,7 @@ export async function createOrderFromIntake(
         actor: request.customer.email.trim().toLowerCase(),
         actorRole: 'CUSTOMER',
         reason: isCashOnDelivery
-          ? `Cash on delivery order created. Reserved stock committed. Carrier: ${carrier}.`
+          ? 'Cash on delivery order created. Reserved stock committed.'
           : `Order created server-side; stock reserved for ${tenant.reservationTTLMinutes} minutes pending verified payment.`,
         metadata: {
           reservationIds,

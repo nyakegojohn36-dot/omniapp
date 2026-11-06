@@ -87,13 +87,14 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   });
 
   const handleToggleIntegration = (id: string) => {
+    // This only flips which description is shown. Nothing here contacts a provider,
+    // so it must not stamp a sync time: "Just now" would claim a live handshake.
     setIntegrations((prev) =>
       prev.map((int) =>
         int.id === id
           ? {
               ...int,
               status: int.status === 'CONNECTED' ? 'DISCONNECTED' : 'CONNECTED',
-              lastSyncAt: 'Just now',
             }
           : int
       )
@@ -551,6 +552,14 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {integrations.map((item) => {
               const isConnected = item.status === 'CONNECTED';
+              // ATTENTION means the code path exists but its credentials are unset.
+              const needsConfig = item.status === 'ATTENTION';
+              const badgeClass = isConnected
+                ? 'bg-emerald-100 text-emerald-800'
+                : needsConfig
+                  ? 'bg-amber-100 text-amber-800'
+                  : 'bg-slate-100 text-slate-500';
+              const badgeLabel = isConnected ? 'Demo connected' : needsConfig ? 'Needs configuration' : 'Not connected';
               return (
                 <div
                   key={item.id}
@@ -566,14 +575,8 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                         {item.icon === 'Bell' && <Bell className="w-5 h-5 text-purple-600" />}
                         {item.icon === 'ShieldCheck' && <ShieldCheck className="w-5 h-5 text-teal-600" />}
                       </div>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          isConnected
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-slate-100 text-slate-500'
-                        }`}
-                      >
-                        {item.status}
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${badgeClass}`}>
+                        {badgeLabel}
                       </span>
                     </div>
 
@@ -582,9 +585,12 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                   </div>
 
                   <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
+                    <div className="text-[11px] text-slate-600">
+                      Sample connector configuration. No external service is connected.
+                    </div>
                     <div className="text-[11px] text-slate-500 font-mono">{item.details}</div>
                     <div className="flex items-center justify-between pt-1">
-                      <span className="text-[11px] text-slate-400">Sync: {item.lastSyncAt}</span>
+                      <span className="text-[11px] text-slate-500">Live sync unavailable</span>
                       <button
                         onClick={() => handleToggleIntegration(item.id)}
                         className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
@@ -593,7 +599,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                             : 'bg-slate-900 text-white hover:bg-slate-800'
                         }`}
                       >
-                        {isConnected ? 'Disconnect' : 'Connect'}
+                        {isConnected ? 'Simulate disconnect' : 'Simulate connect'}
                       </button>
                     </div>
                   </div>
