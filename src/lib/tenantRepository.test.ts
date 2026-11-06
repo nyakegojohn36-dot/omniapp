@@ -107,7 +107,20 @@ if (process.env.FIRESTORE_EMULATOR_HOST) {
   const app = getApps()[0] || initializeApp({ projectId: 'demo-sokoflow' });
   const db = getFirestore(app);
   let n = 0;
-  runContract('firestore', () => new FirestoreTenantRepository(db), () => `tenant-fs-${++n}`);
+  // Each repository gets its own collection. "Seed only when the collection is
+  // empty" is a statement about a whole collection, so sharing one with the
+  // other cases in this suite would make the assertion depend on test order.
+  let collectionRun = 0;
+  runContract(
+    'firestore',
+    () =>
+      new FirestoreTenantRepository(
+        db,
+        0,
+        `tenants-contract-${Date.now()}-${++collectionRun}`
+      ),
+    () => `tenant-fs-${++n}`
+  );
 } else {
   test('firestore tenants: contract suite skipped (set FIRESTORE_EMULATOR_HOST to run)', {
     skip: true,

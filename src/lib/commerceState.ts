@@ -97,6 +97,21 @@ export interface ConversationStockPort {
 
 const DEFAULT_LOW_STOCK_THRESHOLD = 5;
 
+/**
+ * The single definition of what a shopper may buy.
+ *
+ * Everything that answers "how many are there?" - the aggregate snapshot, the
+ * reservation planner, and the browser read model - goes through this, so the
+ * three can never drift into disagreeing about the same shelf.
+ */
+export function computeAvailableStock(
+  physicalStock: number,
+  reservedStock: number,
+  quarantineStock: number
+): number {
+  return Math.max(0, physicalStock - (reservedStock + quarantineStock));
+}
+
 /** available = max(0, physical - (reserved + quarantine)) aggregated across warehouses */
 export function computeAvailability(rows: WarehouseInventory[], sku: string): AvailabilitySnapshot {
   let physical = 0;
@@ -115,7 +130,7 @@ export function computeAvailability(rows: WarehouseInventory[], sku: string): Av
     lowStockThreshold = Math.min(lowStockThreshold, row.lowStockThreshold);
   }
 
-  const available = Math.max(0, physical - (reserved + quarantine));
+  const available = computeAvailableStock(physical, reserved, quarantine);
   return {
     sku,
     physicalStock: physical,
@@ -192,7 +207,7 @@ export function planReservation(
   }
 
   const availabilityOf = (row: WarehouseInventory) =>
-    Math.max(0, row.physicalStock - (row.reservedStock + row.quarantineStock));
+    computeAvailableStock(row.physicalStock, row.reservedStock, row.quarantineStock);
 
   const totalAvailable = matching.reduce((sum, row) => sum + availabilityOf(row), 0);
 

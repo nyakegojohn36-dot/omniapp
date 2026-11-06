@@ -275,10 +275,23 @@ export class FirestoreTenantRepository implements TenantRepository {
   private db: Firestore;
   private cache = new Map<string, { tenant: Tenant; expiresAt: number }>();
   private cacheTtlMs: number;
+  private collectionName: string;
 
-  constructor(db: Firestore = getFirestoreDb(), cacheTtlMs: number = DEFAULT_CACHE_TTL_MS) {
+  constructor(
+    db: Firestore = getFirestoreDb(),
+    cacheTtlMs: number = DEFAULT_CACHE_TTL_MS,
+    // Overridable so a test can point at its own collection. Seeding asks
+    // "is this collection empty?", which cannot be exercised in isolation on the
+    // shared one.
+    collectionName: string = TENANTS
+  ) {
     this.db = db;
     this.cacheTtlMs = cacheTtlMs;
+    this.collectionName = collectionName;
+  }
+
+  private collection() {
+    return this.db.collection(this.collectionName);
   }
 
   invalidate(tenantId?: string): void {
@@ -293,7 +306,7 @@ export class FirestoreTenantRepository implements TenantRepository {
     const cached = this.cache.get(tenantId);
     if (cached && cached.expiresAt > Date.now()) return cached.tenant;
 
-    const snapshot = await this.db.collection(TENANTS).doc(tenantId).get();
+    const snapshot = await this.collection().doc(tenantId).get();
     if (!snapshot.exists) {
       this.cache.delete(tenantId);
       return null;
@@ -310,13 +323,13 @@ export class FirestoreTenantRepository implements TenantRepository {
   }
 
   async list(): Promise<Tenant[]> {
-    const snapshot = await this.db.collection(TENANTS).get();
+    const snapshot = await this.collection().get();
     return snapshot.docs.map((doc) => fromDocument(doc.data(), doc.id));
   }
 
   async create(input: unknown): Promise<Tenant> {
     const tenant = normalizeTenant(input);
-    const ref = this.db.collection(TENANTS).doc(tenant.id);
+    const ref = this.collection().doc(tenant.id);
     const created = await this.db.runTransaction(async (transaction) => {
       const existing = await transaction.get(ref);
       if (existing.exists) {
@@ -332,8 +345,7 @@ export class FirestoreTenantRepository implements TenantRepository {
   async update(tenantId: string, patch: unknown): Promise<Tenant> {
     const existing = await this.require(tenantId);
     const updated = normalizeTenant(patch, existing);
-    await this.db
-      .collection(TENANTS)
+    await this.collection()
       .doc(tenantId)
       .set({ ...toDocument(updated), updatedAt: new Date().toISOString() }, { merge: true });
     this.invalidate(tenantId);
@@ -341,12 +353,12 @@ export class FirestoreTenantRepository implements TenantRepository {
   }
 
   async seedIfEmpty(seed: Tenant[]): Promise<boolean> {
-    const snapshot = await this.db.collection(TENANTS).limit(1).get();
+    const snapshot = await this.collection().limit(1).get();
     if (!snapshot.empty) return false;
 
     const batch = this.db.batch();
     for (const tenant of seed) {
-      batch.set(this.db.collection(TENANTS).doc(tenant.id), {
+      batch.set(this.collection().doc(tenant.id), {
         ...toDocument(tenant),
         createdAt: new Date().toISOString(),
       });

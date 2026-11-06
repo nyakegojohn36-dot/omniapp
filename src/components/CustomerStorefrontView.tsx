@@ -264,14 +264,15 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
   );
   const amountNeededForFreeShippingCents = Math.max(0, freeShippingThresholdCents - pricingSummary.subtotalCents);
 
-  // Submit and Place Order with M-PESA STK Push Simulation
+  // Submit and Place Order. Payment is settled by Safaricom, never asserted here.
   const handlePlaceOrder = () => {
     setOrderError(null);
+    setActiveReceiptCode(null);
 
     // The browser states what it wants to buy, never what it costs or whether it
     // is paid. The server prices from the catalogue and reserves atomically, so a
     // tampered request can only be rejected, not honoured.
-    const submitIntake = async (receipt?: string) => {
+    const submitIntake = async (): Promise<Order | null> => {
       setStkState('submitting');
       try {
         const response = await apiFetch('/api/orders', {
@@ -288,7 +289,6 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
             paymentMethod,
             discountCode: appliedDiscount,
             mpesaPhoneNumber: mpesaPhone,
-            mpesaReceiptCode: receipt,
           }),
         });
         const data = await response.json();
@@ -301,35 +301,90 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
         setConfirmedOrder(order);
         setMyOrders((prev) => [order, ...prev.filter((o) => o.id !== order.id)]);
         setCart([]);
-        setStkState('idle');
         setIsCheckoutOpen(false);
         setCheckoutStep(1);
+        return order;
       } catch (error) {
-        setStkState('idle');
         setOrderError(error instanceof Error ? error.message : 'Failed to place order.');
+        return null;
       }
     };
 
-    // If Safaricom M-PESA STK Push selected, simulate realistic Daraja flow
-    if (paymentMethod === 'MPESA_EXPRESS') {
+    /**
+     * Waits for Safaricom's callback to land. The receipt number only ever comes
+     * from the server, which only learns it from Daraja.
+     */
+    const pollSettlement = async (orderId: string): Promise<Order | null> => {
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2400));
+        try {
+          const response = await apiFetch('/api/orders');
+          if (!response.ok) continue;
+          const data = await response.json();
+          const latest = (data.orders as Order[] | undefined)?.find((o) => o.id === orderId);
+          if (!latest) continue;
+          if (latest.isPaid) return latest;
+          if (latest.status === 'PAYMENT_FAILED' || latest.status === 'EXCEPTION_REVIEW') return latest;
+        } catch {
+          // A dropped poll is not a failed payment; keep waiting.
+        }
+      }
+      return null;
+    };
+
+    const collectWithStkPush = async () => {
+      const order = await submitIntake();
+      if (!order) {
+        setStkState('idle');
+        return;
+      }
+
       setStkState('sending_prompt');
-      setTimeout(() => {
+      try {
+        const response = await apiFetch(`/api/orders/${order.id}/mpesa/stk-push`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: mpesaPhone }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          setStkState('idle');
+          setOrderError(
+            data?.error ||
+            `The order was saved as awaiting payment, but the M-Pesa prompt could not be sent (HTTP ${response.status}).`
+          );
+          return;
+        }
+
         setStkState('awaiting_pin');
-        setTimeout(() => {
-          const generatedReceipt = `QK${Math.floor(10000000 + Math.random() * 90000000)}`;
-          setActiveReceiptCode(generatedReceipt);
+        const settled = await pollSettlement(order.id);
+        if (settled?.isPaid) {
+          setActiveReceiptCode(settled.mpesaReceiptCode ?? null);
           setStkState('authorized');
-          setTimeout(() => {
-            void submitIntake(generatedReceipt);
-          }, 600);
-        }, 1200);
-      }, 700);
-    } else {
-      const receipt = paymentMethod === 'MPESA_PAYBILL'
-        ? `RK${Math.floor(10000000 + Math.random() * 90000000)}`
-        : undefined;
-      void submitIntake(receipt);
+          setConfirmedOrder(settled);
+          setMyOrders((prev) => prev.map((o) => (o.id === settled.id ? settled : o)));
+          return;
+        }
+
+        setStkState('idle');
+        setOrderError(
+          settled?.status === 'PAYMENT_FAILED'
+            ? 'The M-Pesa prompt was declined or timed out. The order is saved as awaiting payment and the stock reservation is still held.'
+            : 'Still waiting for M-Pesa to confirm. The order is saved as awaiting payment; it will confirm automatically once Safaricom reports the payment.'
+        );
+      } catch (error) {
+        setStkState('idle');
+        setOrderError(error instanceof Error ? error.message : 'Could not reach the payment service.');
+      }
+    };
+
+    if (paymentMethod === 'MPESA_EXPRESS' || paymentMethod === 'MPESA_PAYBILL') {
+      void collectWithStkPush();
+      return;
     }
+
+    // Card, bank transfer and cash on delivery carry no in-app payment claim.
+    void submitIntake().then(() => setStkState('idle'));
   };
 
   // AI Concierge Chat Handler - Grounded in Kenya
@@ -1476,8 +1531,8 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                   </div>
                 </div>
 
-                {/* M-PESA STK Push Live Simulation Status */}
-                {paymentMethod === 'MPESA_EXPRESS' && (
+                {/* M-PESA STK Push settlement status (driven by the Daraja callback) */}
+                {(paymentMethod === 'MPESA_EXPRESS' || paymentMethod === 'MPESA_PAYBILL') && (
                   <div className="p-3.5 bg-slate-900 text-white rounded-xl space-y-2 border border-slate-800">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -1489,28 +1544,28 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
 
                     {stkState === 'idle' && (
                       <p className="text-[11px] text-slate-300 leading-relaxed">
-                        Clicking the button below will trigger an STK Push PIN prompt directly to your phone. Unlock your screen to enter your M-PESA PIN.
+                        Placing the order sends an STK Push PIN prompt to your phone. The order stays unpaid until Safaricom confirms the payment.
                       </p>
                     )}
 
                     {stkState === 'sending_prompt' && (
                       <div className="flex items-center gap-2 py-1 text-xs text-amber-300 animate-pulse">
                         <Clock className="w-3.5 h-3.5" />
-                        <span>Sending STK prompt to {mpesaPhone} via Daraja Gateway...</span>
+                        <span>Reserving stock, then sending the STK prompt to {mpesaPhone}...</span>
                       </div>
                     )}
 
                     {stkState === 'awaiting_pin' && (
                       <div className="flex items-center gap-2 py-1 text-xs text-emerald-300 font-semibold animate-pulse">
                         <div className="w-3.5 h-3.5 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin"></div>
-                        <span>STK Push received on {mpesaPhone}! Awaiting 4-digit PIN...</span>
+                        <span>Prompt sent to {mpesaPhone}. Enter your M-PESA PIN to pay...</span>
                       </div>
                     )}
 
                     {stkState === 'authorized' && (
                       <div className="flex items-center gap-2 py-1 text-xs text-emerald-400 font-bold">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>PIN Accepted · M-PESA Ref {activeReceiptCode} Confirmed!</span>
+                        <span>Payment confirmed by Safaricom{activeReceiptCode ? ` · M-PESA Ref ${activeReceiptCode}` : ''}</span>
                       </div>
                     )}
                   </div>
@@ -1529,9 +1584,9 @@ export const CustomerStorefrontView: React.FC<CustomerStorefrontViewProps> = ({
                     onClick={handlePlaceOrder}
                     className="px-6 py-2.5 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-slate-800 shadow-md disabled:opacity-75 disabled:cursor-wait"
                   >
-                    {paymentMethod === 'MPESA_EXPRESS' ? (
+                    {paymentMethod === 'MPESA_EXPRESS' || paymentMethod === 'MPESA_PAYBILL' ? (
                       <>
-                        <span>{stkState === 'idle' ? 'Send STK Push & Pay' : 'Processing M-PESA...'}</span>
+                        <span>{stkState === 'idle' ? 'Send STK Push & Pay' : 'Awaiting M-PESA...'}</span>
                         <ArrowRight className="w-4 h-4 text-emerald-400" />
                       </>
                     ) : (

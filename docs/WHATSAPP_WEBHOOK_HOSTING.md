@@ -12,7 +12,7 @@ Use the same Google Cloud project as the Cloud Run service:
 4. Create a Firebase Web App and copy its API key, Auth domain, project ID, and App ID into the AI Studio frontend build environment as `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`. Add the frontend host to Firebase Authentication's **Authorized domains**. These web app identifiers are public; do not put server secrets in `VITE_` variables.
 5. Set `VITE_API_BASE_URL` to the Cloud Run service URL in the AI Studio frontend build environment, and add that exact frontend origin (for example `https://sokoflow.ai.studio`) to the Cloud Run `CORS_ALLOWED_ORIGINS`.
 6. Assign the Cloud Run runtime service account the **Cloud Datastore User** role (`roles/datastore.user`) so Firebase Admin can access Firestore.
-7. Set `OWNER_EMAIL` on Cloud Run to the primary owner's email. Create that account in the app and verify its email. The verified matching account is assigned the owner role; all self-signups are customers. Owners can assign staff roles to registered users from the workspace.
+7. Set `OWNER_EMAILS` on Cloud Run to a comma-separated allowlist of owner addresses. Create those accounts in the app and verify their email. A verified matching account is assigned the owner role; all self-signups are customers. Owners can assign staff roles to registered users from the workspace.
 
 The app's former browser-only demo personas are not valid accounts. Use Firebase Authentication accounts instead.
 
@@ -33,7 +33,7 @@ The app's former browser-only demo personas are not valid accounts. Use Firebase
    | `WHATSAPP_PHONE_NUMBER_ID` | The sender's Phone Number ID from Meta API Setup |
    | `WHATSAPP_WABA_ID` | The WhatsApp Business Account ID from Meta |
    | `FIREBASE_PROJECT_ID` | Firebase/Google Cloud project ID |
-   | `OWNER_EMAIL` | The verified primary owner's Firebase Authentication email |
+   | `OWNER_EMAILS` | Comma-separated allowlist of verified owner emails (`OWNER_EMAIL` still works for a single address) |
    | `DEFAULT_TENANT_ID` | `tenant-nordic` unless you have configured a different tenant |
    | `CORS_ALLOWED_ORIGINS` | Exact comma-separated frontend origins, such as `https://sokoflow.ai.studio` |
 

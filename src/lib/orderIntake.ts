@@ -45,7 +45,6 @@ export interface OrderIntakeRequest {
   paymentMethod: PaymentMethod;
   discountCode?: string;
   mpesaPhoneNumber?: string;
-  mpesaReceiptCode?: string;
   notes?: string;
   /** Client's own arithmetic. Compared, never trusted. */
   claimedTotalCents?: number;
@@ -292,10 +291,9 @@ export async function createOrderFromIntake(
   const city = request.shippingAddress.city?.toLowerCase() || '';
   const carrier = city.includes('nairobi') ? 'Sendy / Nairobi Boda Courier' : 'Fargo Courier Kenya';
   const etimsInvoiceNumber = `eTIMS-2026-NBI-${String(sequence).padStart(5, '0')}`;
-  const mpesaReceiptCode = request.mpesaReceiptCode ||
-    (request.paymentMethod === 'MPESA_EXPRESS' || request.paymentMethod === 'MPESA_PAYBILL'
-      ? `QK${Math.floor(10000000 + Math.random() * 90000000)}`
-      : undefined);
+  // No receipt code is generated here. A receipt is issued by Safaricom and
+  // arrives through the payment callback; inventing one would be evidence for a
+  // payment that never happened.
 
   const order: Order = {
     id: orderId,
@@ -315,7 +313,7 @@ export async function createOrderFromIntake(
     paymentMethod: request.paymentMethod,
     isPaid: false,
     paymentTransactionRef: undefined,
-    mpesaReceiptCode,
+    mpesaReceiptCode: undefined,
     mpesaPhoneNumber: request.mpesaPhoneNumber,
     etimsInvoiceNumber,
     shippingCarrier: carrier,

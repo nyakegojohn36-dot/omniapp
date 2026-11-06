@@ -140,9 +140,14 @@ export const ConcurrencySimulator: React.FC<ConcurrencySimulatorProps> = ({ isOp
               <Zap className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">
-                Scenario H: Race Condition Concurrency Tester
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-white">
+                  Race Condition Concurrency Tester
+                </h2>
+                <span className="px-2 py-0.5 rounded-full bg-amber-400/20 border border-amber-400/40 text-[10px] font-bold tracking-wide text-amber-300 uppercase">
+                  Offline sandbox
+                </span>
+              </div>
               <p className="text-xs text-slate-400 mt-0.5">
                 Simulates 2 simultaneous customers attempting to purchase the exact same final unit
               </p>
@@ -164,7 +169,10 @@ export const ConcurrencySimulator: React.FC<ConcurrencySimulatorProps> = ({ isOp
               <span>Initial Physical: 1 unit · Available: 1 unit</span>
             </div>
             <p>
-              Under naive read-then-write logic, both requests see Available = 1, leading to duplicate reservations and an overselling disaster. SokoFlow uses mutex atomic locking to guarantee that exactly <strong>one</strong> request wins the reservation, while the other is gracefully rejected and offered out-of-stock recovery.
+              Under naive read-then-write logic, both requests see Available = 1, leading to duplicate reservations and an overselling disaster. This sandbox uses an in-browser inventory store with a per-SKU lock, so exactly <strong>one</strong> request wins the reservation while the other is gracefully rejected and offered out-of-stock recovery.
+            </p>
+            <p className="pt-1 border-t border-slate-200 text-[11px] text-slate-500">
+              This is a teaching demo: it runs entirely in this tab and reads and writes no tenant stock. Real checkout is protected by a Firestore transaction on the server, and that guarantee is verified against the emulator in the test suite.
             </p>
           </div>
 

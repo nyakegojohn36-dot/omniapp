@@ -7,3 +7,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# AI Studio scratch media and the review screenshots taken of this UI. They are
+# not assets: nothing in src/ or public/ references them. Root-anchored so the
+# real images under src/assets and public/assets stay tracked.
+.aistudio/
+/*.png

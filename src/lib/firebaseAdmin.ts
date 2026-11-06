@@ -15,6 +15,7 @@ import type {
   WhatsAppCustomerSession,
   WhatsAppMessageRecord,
 } from './types.ts';
+import type { ReturnRequest } from './returns.ts';
 
 export interface AuthenticatedUser extends User {
   emailVerified: boolean;
@@ -60,6 +61,22 @@ function documentId(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/**
+ * The owner allowlist, read from configuration only.
+ *
+ * It used to be three addresses hardcoded here. A literal owner email in source
+ * is a backdoor: anyone who can read the repository, or the bundle, knows an
+ * address that self-provisions to BUSINESS_OWNER on first sign-in. It now comes
+ * from OWNER_EMAILS (comma-separated) with OWNER_EMAIL kept for single-address
+ * deployments that already have it set.
+ */
+function ownerAllowlist(): string[] {
+  return (process.env.OWNER_EMAILS || process.env.OWNER_EMAIL || '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 async function loadOrCreateUserProfile(
   decoded: {
     uid: string;
@@ -69,15 +86,9 @@ async function loadOrCreateUserProfile(
   }
 ): Promise<AuthenticatedUser> {
   const email = decoded.email?.trim().toLowerCase() || '';
-  const ownerEmail = process.env.OWNER_EMAIL?.trim().toLowerCase() || '';
   const tenantId = process.env.DEFAULT_TENANT_ID || 'tenant-nordic';
 
-  const isConfiguredOwner = Boolean(
-    (ownerEmail && email && email === ownerEmail) ||
-    email === 'nyakegojohn36@gmail.com' ||
-    email === 'nyakegojohn7@gmail.com' ||
-    email === 'alex@safaripeak.co.ke'
-  );
+  const isConfiguredOwner = Boolean(email) && ownerAllowlist().includes(email);
 
   const fallbackProfile: AuthenticatedUser = {
     id: decoded.uid,
@@ -333,6 +344,35 @@ export async function saveOrder(order: Order): Promise<void> {
 }
 
 /**
+ * Maps a Daraja CheckoutRequestID back to its order. Single-field equality, so
+ * it needs no composite index; the tenant is read off the order itself because a
+ * callback arrives with no caller identity at all.
+ */
+export async function findOrderByCheckoutRequestId(
+  checkoutRequestId: string
+): Promise<Order | null> {
+  if (!checkoutRequestId) return null;
+  try {
+    const snapshot = await getFirestoreDb()
+      .collection('orders')
+      .where('mpesaCheckoutRequestId', '==', checkoutRequestId)
+      .limit(1)
+      .get();
+    const doc = snapshot.docs[0];
+    return doc ? (doc.data() as Order) : null;
+  } catch (error) {
+    console.warn(
+      '[Orders] Checkout lookup unavailable, using memory store:',
+      (error as Error).message
+    );
+    for (const order of fallbackOrders.values()) {
+      if (order.mpesaCheckoutRequestId === checkoutRequestId) return order;
+    }
+    return null;
+  }
+}
+
+/**
  * Highest order number already present in a list of "ORD-000123" style ids.
  * Anchored on the trailing digit run so the year prefix cannot win.
  */
@@ -380,6 +420,90 @@ export async function nextOrderSequence(tenantId: string): Promise<number> {
     });
     return next;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Returns
+// ---------------------------------------------------------------------------
+
+const fallbackReturns = new Map<string, ReturnRequest>();
+
+/**
+ * Allocates the next return number for a tenant.
+ *
+ * Return ids are quoted to customers and printed on the warehouse paperwork, so
+ * like order numbers they must never be reused. Firestore counter, no in-memory
+ * fallback: a duplicate return number would let two claims collide on the same
+ * refund.
+ */
+export async function nextReturnSequence(tenantId: string): Promise<number> {
+  const db = getFirestoreDb();
+  const counterRef = db.collection('counters').doc(documentId(`${tenantId}:returnSequence`));
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(counterRef);
+    if (snapshot.exists) {
+      const next = Number(snapshot.data()?.value ?? 0) + 1;
+      transaction.update(counterRef, { value: next, updatedAt: new Date().toISOString() });
+      return next;
+    }
+
+    const existing = await transaction.get(
+      db.collection('returns').where('tenantId', '==', tenantId)
+    );
+    const next = highestOrderNumber(existing.docs.map((doc) => String(doc.data().id ?? ''))) + 1;
+    transaction.create(counterRef, {
+      tenantId,
+      value: next,
+      updatedAt: new Date().toISOString(),
+    });
+    return next;
+  });
+}
+
+export async function listTenantReturns(tenantId: string): Promise<ReturnRequest[]> {
+  try {
+    const snapshot = await getFirestoreDb()
+      .collection('returns')
+      .where('tenantId', '==', tenantId)
+      .get();
+    return snapshot.docs
+      .map((doc) => doc.data() as ReturnRequest)
+      .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
+  } catch (error) {
+    console.warn('[Returns] Firestore read unavailable, using memory store:', (error as Error).message);
+    return Array.from(fallbackReturns.values())
+      .filter((record) => record.tenantId === tenantId)
+      .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
+  }
+}
+
+export async function getTenantReturn(
+  tenantId: string,
+  returnId: string
+): Promise<ReturnRequest | null> {
+  try {
+    const snapshot = await getFirestoreDb()
+      .collection('returns')
+      .doc(documentId(`${tenantId}:${returnId}`))
+      .get();
+    const record = snapshot.data() as ReturnRequest | undefined;
+    return record?.tenantId === tenantId ? record : null;
+  } catch {
+    return fallbackReturns.get(documentId(`${tenantId}:${returnId}`)) || null;
+  }
+}
+
+export async function saveReturnRequest(record: ReturnRequest): Promise<void> {
+  fallbackReturns.set(documentId(`${record.tenantId}:${record.id}`), record);
+  try {
+    await getFirestoreDb()
+      .collection('returns')
+      .doc(documentId(`${record.tenantId}:${record.id}`))
+      .set(record, { merge: true });
+  } catch (error) {
+    console.warn('[Returns] Firestore write unavailable, saved in memory:', (error as Error).message);
+  }
 }
 
 export async function listTenantMessages(tenantId: string): Promise<WhatsAppMessageRecord[]> {

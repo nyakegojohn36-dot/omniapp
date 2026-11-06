@@ -28,7 +28,10 @@ export interface TransitionResult {
 export const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ['PENDING_CONFIRMATION', 'AWAITING_PAYMENT', 'CANCELLED'],
   PENDING_CONFIRMATION: ['AWAITING_PAYMENT', 'CONFIRMED', 'CANCELLED'],
-  AWAITING_PAYMENT: ['CONFIRMED', 'PAYMENT_FAILED', 'CANCELLED'],
+  // EXCEPTION_REVIEW is reachable from AWAITING_PAYMENT because money can arrive
+  // that does not match the order (short payment, payment for a dead order). That
+  // is a human decision, not a silent confirmation.
+  AWAITING_PAYMENT: ['CONFIRMED', 'PAYMENT_FAILED', 'CANCELLED', 'EXCEPTION_REVIEW'],
   PAYMENT_FAILED: ['AWAITING_PAYMENT', 'CANCELLED'],
   CONFIRMED: ['PROCESSING', 'CANCELLATION_REQUESTED', 'CANCELLED', 'ON_HOLD'],
   PROCESSING: ['READY_FOR_DISPATCH', 'CANCELLATION_REQUESTED', 'ON_HOLD', 'EXCEPTION_REVIEW'],
@@ -147,7 +150,9 @@ export function transitionOrder(
   const updatedOrder: Order = {
     ...order,
     status: targetStatus,
-    isPaid: context.paymentConfirmed ?? order.isPaid,
+    // Payment only ever ratchets on. Passing `paymentConfirmed: false` (or
+    // omitting it) must not un-pay an order that has already settled.
+    isPaid: context.paymentConfirmed === true ? true : order.isPaid,
     trackingNumber: (context.metadata?.trackingNumber as string) ?? order.trackingNumber,
     shippingCarrier: (context.metadata?.shippingCarrier as string) ?? order.shippingCarrier,
     auditTrail: [...order.auditTrail, auditEntry],

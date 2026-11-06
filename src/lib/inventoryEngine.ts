@@ -5,6 +5,9 @@
  */
 
 import type { StockReservation, WarehouseInventory } from './types.ts';
+// Shared with the durable store: one definition of availability, so the legacy
+// store and the authoritative one cannot disagree about the same shelf.
+import { computeAvailableStock } from './commerceState.ts';
 
 export interface ReserveStockParams {
   tenantId: string;
@@ -89,7 +92,7 @@ export class InventoryStore {
       }
     }
 
-    const available = Math.max(0, physical - (reserved + quarantine));
+    const available = computeAvailableStock(physical, reserved, quarantine);
     return {
       sku,
       physicalStock: physical,
@@ -142,7 +145,11 @@ export class InventoryStore {
       // Calculate total available
       let totalAvailable = 0;
       for (const inv of matchingInventories) {
-        const avail = Math.max(0, inv.physicalStock - (inv.reservedStock + inv.quarantineStock));
+        const avail = computeAvailableStock(
+          inv.physicalStock,
+          inv.reservedStock,
+          inv.quarantineStock
+        );
         totalAvailable += avail;
       }
 

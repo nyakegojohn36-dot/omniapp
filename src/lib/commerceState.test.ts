@@ -51,9 +51,16 @@ function product(sku: string, id = `prod-${sku.toLowerCase()}`): Product {
   };
 }
 
+/**
+ * Distinguishes this process from any earlier one that wrote to the same
+ * emulator. Without it, "seeding only runs on an empty tenant" would fail on a
+ * second run against an emulator whose data outlived the previous suite.
+ */
+const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
 function runContract(label: string, create: () => CommerceState) {
   let sequence = 0;
-  const nextTenant = () => `tenant-${label}-${++sequence}`;
+  const nextTenant = () => `tenant-${label}-${RUN_ID}-${++sequence}`;
 
   test(`${label}: aggregates availability across warehouses`, async () => {
     const state = create();

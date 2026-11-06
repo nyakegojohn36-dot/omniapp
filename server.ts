@@ -10,11 +10,29 @@ import { createCommerceRuntime } from './src/lib/commerceRuntime.ts';
 import { CommerceStateUnavailableError } from './src/lib/firestoreCommerceState.ts';
 import { createOrderFromIntake } from './src/lib/orderIntake.ts';
 import {
+  amountKesFromCents,
+  createDarajaClient,
+  MpesaRequestError,
+  normalizeKenyanPhone,
+  readMpesaConfig,
+  type MpesaConfig,
+} from './src/lib/mpesaDaraja.ts';
+import { applyStkOutcome, handleStkCallback, simulateSettlement } from './src/lib/mpesaSettlement.ts';
+import {
   createTenantRepository,
   TenantValidationError,
   UnknownTenantError,
 } from './src/lib/tenantRepository.ts';
 import { transitionOrder } from './src/lib/orderStateMachine.ts';
+import {
+  createReturnRequest,
+  inspectReturn,
+  markRefundPaid,
+  receiveReturn,
+  type ReturnReason,
+  type ReturnRequest,
+  type ReturnStatus,
+} from './src/lib/returns.ts';
 import {
   SEED_INVENTORIES,
   SEED_PRODUCTS,
@@ -28,15 +46,20 @@ import {
   consumeWebChatQuota,
   getRequestUser,
   getTenantOrder,
+  getTenantReturn,
   getWhatsAppSession,
+  findOrderByCheckoutRequestId,
   listTenantMessages,
   listTenantOrders,
+  listTenantReturns,
   createTenantCustomer,
   listTenantUsers,
   nextOrderSequence,
+  nextReturnSequence,
   releaseWebhookMessage,
   requireRoles,
   saveOrder,
+  saveReturnRequest,
   saveWhatsAppMessages,
   saveWhatsAppSession,
   updateTenantUserRole,
@@ -112,6 +135,18 @@ const commerce = createCommerceRuntime();
 // no caller identity, so it alone uses this configured default tenant.
 const tenants = createTenantRepository({ seed: SEED_TENANTS });
 const tenantId = process.env.DEFAULT_TENANT_ID || SEED_TENANTS[0].id;
+
+// Read once at boot: /health reports it, and checkout refuses rather than guesses
+// when the Daraja credentials are absent.
+const mpesaConfig: MpesaConfig | null = readMpesaConfig();
+if (!mpesaConfig) {
+  console.warn(
+    '[M-Pesa] Daraja credentials are not set, so STK push is disabled and the API ' +
+    'returns 503 rather than simulating a payment.'
+  );
+} else if (mpesaConfig.environment === 'sandbox') {
+  console.info('[M-Pesa] Daraja client in sandbox mode.');
+}
 
 /**
  * Keeps stock in step with the order lifecycle. Confirming an order commits its
@@ -201,8 +236,12 @@ function startReservationSweeper(scopedTenantId: string): NodeJS.Timeout | null 
 app.use('/api', (req: Request, res: Response, next) => {
   const requestPath = req.path.toLowerCase();
   const publicWebhook =
-    (requestPath === '/whatsapp/webhook' || requestPath === '/webhooks/whatsapp') &&
-    (req.method === 'GET' || req.method === 'POST');
+    ((requestPath === '/whatsapp/webhook' || requestPath === '/webhooks/whatsapp') &&
+      (req.method === 'GET' || req.method === 'POST')) ||
+    // Daraja posts the settlement callback with no caller identity, so it is
+    // authenticated by matching the CheckoutRequestID to an order we issued it
+    // for - never by trusting the payload itself.
+    (requestPath === '/payments/mpesa/callback' && req.method === 'POST');
   if (publicWebhook) return next();
   return authenticateRequest(req, res, next);
 });
@@ -243,14 +282,12 @@ function sendKnownError(res: Response, error: unknown): boolean {
   return false;
 }
 
-const commerceRoute = (
-  handler: (req: Request, res: Response) => Promise<void>
-): RequestHandler => (req, res, next) => {
-  void handler(req, res).catch((error) => {
-    if (sendKnownError(res, error)) return;
-    next(error);
-  });
-};
+/**
+ * Historical name for the same wrapper: routes touching the authoritative store
+ * were once the only ones allowed to surface a 503. Every route now maps known
+ * failures identically, so this is an alias rather than a second policy.
+ */
+const commerceRoute = asyncRoute;
 const initialToken = process.env.WHATSAPP_ACCESS_TOKEN || '';
 const initialAppSecret = process.env.WHATSAPP_APP_SECRET || '';
 const initialPhoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
@@ -500,8 +537,16 @@ app.get('/health', (_req: Request, res: Response) => {
         process.env.GOOGLE_CLOUD_PROJECT ||
         process.env.GCLOUD_PROJECT
       ),
-      ownerEmailConfigured: Boolean(process.env.OWNER_EMAIL),
+      ownerEmailConfigured: Boolean(
+        process.env.OWNER_EMAILS || process.env.OWNER_EMAIL
+      ),
       allowedFrontendOriginsConfigured: allowedOrigins.size > 0,
+    },
+    payments: {
+      mpesaConfigured: Boolean(mpesaConfig),
+      mpesaEnvironment: mpesaConfig?.environment ?? null,
+      simulatedSettlementsAllowed:
+        process.env.NODE_ENV !== 'production' && (mpesaConfig?.allowSimulated ?? false),
     },
   });
 });
@@ -964,6 +1009,16 @@ app.post(
       res.status(400).json({ error: 'A payment reference is required to confirm payment.' });
       return;
     }
+    // This route is a staff attestation for money that arrived outside Daraja
+    // (bank transfer, cheque, cash). An M-Pesa order must settle through the
+    // authenticated callback, otherwise any user with the right role could mark
+    // a mobile-money order paid without a shilling changing hands.
+    if (currentOrder.paymentMethod === 'MPESA_PAYBILL' || currentOrder.paymentMethod === 'MPESA_EXPRESS') {
+      res.status(409).json({
+        error: 'M-Pesa orders settle through the Daraja callback, not manual confirmation.',
+      });
+      return;
+    }
 
     // Idempotent: a replayed payment webhook must not re-confirm or re-commit.
     if (currentOrder.isPaid && currentOrder.status === 'CONFIRMED') {
@@ -992,6 +1047,474 @@ app.post(
     await reconcileReservations(user.tenantId, paidOrder);
     await saveOrder(paidOrder);
     res.json({ success: true, order: paidOrder });
+  })
+);
+
+// 11b. M-Pesa (Safaricom Daraja): request, settle, reconcile
+//
+// Orders are never marked paid on the strength of a client claim. Money arrives
+// as a callback signed off by Safaricom's own CheckoutRequestID, and the amount
+// is compared against what we asked for before stock is committed.
+const settlementDeps = {
+  state: commerce.state,
+  findOrderByCheckoutRequestId,
+  saveOrder,
+};
+
+function sendMpesaError(res: Response, error: unknown): boolean {
+  if (error instanceof MpesaRequestError) {
+    console.error('[M-Pesa] Daraja request failed.', error.message, error.detail ?? '');
+    // 502: Safaricom failed us, not the caller's fault, and it is worth retrying.
+    res.status(502).json({ error: error.message });
+    return true;
+  }
+  return false;
+}
+
+app.post(
+  '/api/orders/:id/mpesa/stk-push',
+  requireRoles(
+    'SUPER_ADMIN',
+    'BUSINESS_OWNER',
+    'SALES_STAFF',
+    'SUPPORT_STAFF',
+    'CUSTOMER'
+  ),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const order = await getTenantOrder(user.tenantId, req.params.id);
+    if (!order) {
+      res.status(404).json({ error: 'Order not found.' });
+      return;
+    }
+    if (user.role === 'CUSTOMER' && order.customerId !== user.id) {
+      res.status(403).json({ error: 'You can only pay for your own order.' });
+      return;
+    }
+    if (order.isPaid) {
+      res.status(409).json({ error: 'This order is already paid.' });
+      return;
+    }
+    if (order.paymentMethod === 'CASH_ON_DELIVERY') {
+      res.status(400).json({ error: 'Cash on delivery orders are settled by the courier.' });
+      return;
+    }
+    if (order.status !== 'AWAITING_PAYMENT' && order.status !== 'PAYMENT_FAILED') {
+      res.status(409).json({ error: `Order status ${order.status} cannot request a payment.` });
+      return;
+    }
+
+    const requestedPhone =
+      req.body?.phone || order.mpesaPhoneNumber || order.customerPhone || '';
+    const phone = normalizeKenyanPhone(String(requestedPhone));
+    if (!phone) {
+      res.status(400).json({
+        error: 'A valid Kenyan mobile number is required to send an M-Pesa prompt.',
+      });
+      return;
+    }
+
+    const amountKes = amountKesFromCents(order.totalCents);
+    if (amountKes <= 0) {
+      res.status(400).json({ error: 'This order has no payable amount.' });
+      return;
+    }
+
+    let client;
+    try {
+      client = createDarajaClient(mpesaConfig);
+    } catch (error) {
+      res.status(503).json({
+        error:
+          'M-Pesa is not configured on this deployment. Set the MPESA_* environment ' +
+          'variables to enable mobile-money checkout.',
+      });
+      return;
+    }
+
+    let accepted;
+    try {
+      accepted = await client.requestStkPush({
+        phone,
+        amountKes,
+        accountReference: order.id.replace(/[^A-Za-z0-9]/g, '').slice(0, 12),
+        description: `Order ${order.id}`,
+      });
+    } catch (error) {
+      if (sendMpesaError(res, error)) return;
+      throw error;
+    }
+
+    // Retrying after a declined prompt must re-open the order for payment.
+    let pending: Order = order;
+    if (order.status === 'PAYMENT_FAILED') {
+      const reopened = transitionOrder(order, 'AWAITING_PAYMENT', {
+        actor: user.email,
+        actorRole: user.role,
+        reason: 'M-Pesa payment prompt requested again.',
+      });
+      if (reopened.success) pending = reopened.order;
+    }
+
+    const withCheckout: Order = {
+      ...pending,
+      mpesaCheckoutRequestId: accepted.checkoutRequestId,
+      mpesaMerchantRequestId: accepted.merchantRequestId,
+      mpesaAmountKes: accepted.requestedAmountKes,
+      mpesaPhoneNumber: phone,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveOrder(withCheckout);
+
+    res.status(202).json({
+      success: true,
+      checkoutRequestId: accepted.checkoutRequestId,
+      customerMessage: accepted.customerMessage,
+      amountKes: accepted.requestedAmountKes,
+      status: withCheckout.status,
+    });
+  })
+);
+
+/**
+ * Safaricom's settlement callback. Always answered with a 200 envelope: anything
+ * else makes Daraja retry the same event, and the retries are then handled by the
+ * idempotent settlement path rather than by the transport.
+ */
+app.post(
+  '/api/payments/mpesa/callback',
+  asyncRoute(async (req, res) => {
+    const result = await handleStkCallback(settlementDeps, req.body);
+    if (result.status === 'SETTLED') {
+      console.info(`[M-Pesa] Settled ${result.order.id} (${result.receipt}).`);
+    } else if (result.status !== 'ALREADY_SETTLED') {
+      console.warn('[M-Pesa] Callback not applied:', result.status, result);
+    }
+    res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+  })
+);
+
+/**
+ * Reconciliation for a callback that never arrived. Reports what Safaricom says
+ * rather than guessing, and settles only when Daraja itself confirms payment.
+ */
+app.get(
+  '/api/payments/mpesa/:checkoutRequestId/status',
+  requireRoles(
+    'SUPER_ADMIN',
+    'BUSINESS_OWNER',
+    'SALES_STAFF',
+    'SUPPORT_STAFF',
+    'CUSTOMER'
+  ),
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const checkoutRequestId = req.params.checkoutRequestId;
+    const order = await findOrderByCheckoutRequestId(checkoutRequestId);
+    if (!order || order.tenantId !== user.tenantId) {
+      res.status(404).json({ error: 'No order matches that checkout request.' });
+      return;
+    }
+    if (user.role === 'CUSTOMER' && order.customerId !== user.id) {
+      res.status(403).json({ error: 'You can only track your own payment.' });
+      return;
+    }
+
+    let client;
+    try {
+      client = createDarajaClient(mpesaConfig);
+    } catch {
+      res.status(503).json({ error: 'M-Pesa is not configured on this deployment.' });
+      return;
+    }
+
+    let query;
+    try {
+      query = await client.queryStkPush(checkoutRequestId);
+    } catch (error) {
+      if (sendMpesaError(res, error)) return;
+      throw error;
+    }
+
+    res.json({
+      orderId: order.id,
+      orderStatus: order.status,
+      isPaid: order.isPaid,
+      daraja: query,
+      // Daraja's status query does not return the receipt number, so a payment
+      // recovered this way still needs its receipt reconciled by staff.
+      requiresManualReconciliation: query.paid && !order.isPaid,
+    });
+  })
+);
+
+/**
+ * Local-development shortcut for the demo checkout. Refused outside development
+ * and without an explicit opt-in, and its receipt is unmistakably synthetic.
+ */
+app.post(
+  '/api/payments/mpesa/simulate',
+  requireRoles('SUPER_ADMIN', 'BUSINESS_OWNER', 'SALES_STAFF'),
+  commerceRoute(async (req, res) => {
+    const allowed =
+      process.env.NODE_ENV !== 'production' && (mpesaConfig?.allowSimulated ?? false);
+    if (!allowed) {
+      res.status(403).json({
+        error:
+          'Simulated settlements are disabled. They require NODE_ENV!=production and ' +
+          'MPESA_ALLOW_SIMULATED=true.',
+      });
+      return;
+    }
+
+    const user = getRequestUser(req);
+    const orderId = String(req.body?.orderId || '').trim();
+    const order = await getTenantOrder(user.tenantId, orderId);
+    if (!order) {
+      res.status(404).json({ error: 'Order not found.' });
+      return;
+    }
+
+    const result = await simulateSettlement(settlementDeps, order);
+    if (result.status !== 'SETTLED' && result.status !== 'ALREADY_SETTLED') {
+      res.status(409).json({ error: `Simulated settlement not applied: ${result.status}.` });
+      return;
+    }
+    res.json({ success: true, order: result.order, receipt: result.order.mpesaReceiptCode });
+  })
+);
+
+// 11c. Returns: request, receive, inspect, refund
+//
+// Four separate steps on purpose. The customer asking changes no stock; only a
+// human grading the goods can put anything back on the shelf, and only then is a
+// refund queued. See returns.ts for the arithmetic.
+const RETURN_REASONS: ReturnReason[] = [
+  'DAMAGED_IN_TRANSIT',
+  'WRONG_ITEM',
+  'NOT_AS_DESCRIBED',
+  'FAULTY',
+  'CHANGED_MIND',
+];
+const RETURN_STATUSES: ReturnStatus[] = ['REQUESTED', 'RECEIVED', 'INSPECTED', 'REJECTED', 'CLOSED'];
+
+/**
+ * Where each returned SKU should land. The reservation remembers which shelf the
+ * units left from, which is exactly where they belong when they come back.
+ */
+async function resolveReturnWarehouses(
+  scopedTenantId: string,
+  order: Order
+): Promise<Record<string, string>> {
+  const [reservations, inventory] = await Promise.all([
+    commerce.state.listReservations(scopedTenantId, { orderId: order.id }),
+    commerce.state.listInventory(scopedTenantId),
+  ]);
+
+  const resolved: Record<string, string> = {};
+  for (const item of order.items) {
+    const warehouseId =
+      reservations.find((reservation) => reservation.sku === item.sku)?.warehouseId ??
+      inventory.find((row) => row.sku === item.sku)?.warehouseId;
+    if (warehouseId) resolved[item.sku] = warehouseId;
+  }
+  return resolved;
+}
+
+app.get(
+  '/api/returns',
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const status = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : '';
+    let records = await listTenantReturns(user.tenantId);
+    if (user.role === 'CUSTOMER') {
+      records = records.filter((record) => record.customerId === user.id);
+    }
+    if (RETURN_STATUSES.includes(status as ReturnStatus)) {
+      records = records.filter((record) => record.status === status);
+    }
+    res.json({ returns: records });
+  })
+);
+
+app.get(
+  '/api/returns/:id',
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const record = await getTenantReturn(user.tenantId, req.params.id);
+    if (!record) {
+      res.status(404).json({ error: 'Return not found.' });
+      return;
+    }
+    if (user.role === 'CUSTOMER' && record.customerId !== user.id) {
+      res.status(403).json({ error: 'You can only view your own return.' });
+      return;
+    }
+    res.json({ returnRequest: record, order: await getTenantOrder(user.tenantId, record.orderId) });
+  })
+);
+
+app.post(
+  '/api/returns',
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    const orderId = String(req.body?.orderId || '').trim();
+    if (!orderId) {
+      res.status(400).json({ error: 'An orderId is required.' });
+      return;
+    }
+
+    const order = await getTenantOrder(user.tenantId, orderId);
+    if (!order) {
+      res.status(404).json({ error: 'Order not found.' });
+      return;
+    }
+    if (user.role === 'CUSTOMER' && order.customerId !== user.id) {
+      res.status(403).json({ error: 'You can only return your own order.' });
+      return;
+    }
+
+    // Allocate before validating: a refused claim burns a number, which is
+    // preferable to a return id that silently depends on a later read.
+    const returnId = `RET-${String(await nextReturnSequence(user.tenantId)).padStart(6, '0')}`;
+    const existingReturns = (await listTenantReturns(user.tenantId)).filter(
+      (record) => record.orderId === order.id
+    );
+
+    const result = createReturnRequest(
+      {
+        order,
+        lines: Array.isArray(req.body?.lines)
+          ? req.body.lines.map((line: any) => ({ sku: line?.sku, quantity: line?.quantity }))
+          : [],
+        reason: req.body?.reason as ReturnReason,
+        note: typeof req.body?.note === 'string' ? req.body.note : undefined,
+        warehouseBySku: await resolveReturnWarehouses(user.tenantId, order),
+        actor: user.email,
+        actorRole: user.role,
+        existingReturns,
+      },
+      { nextReturnId: () => returnId }
+    );
+
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    await Promise.all([saveOrder(result.order), saveReturnRequest(result.returnRequest)]);
+    res.status(201).json({
+      success: true,
+      order: result.order,
+      returnRequest: result.returnRequest,
+    });
+  })
+);
+
+/**
+ * Loads a return and its order, enforcing that a caller only reaches their own
+ * records. Returns null after writing the error response.
+ */
+async function loadReturnForRequest(
+  req: Request,
+  res: Response
+): Promise<{ record: ReturnRequest; order: Order } | null> {
+  const user = getRequestUser(req);
+  const record = await getTenantReturn(user.tenantId, req.params.id);
+  if (!record) {
+    res.status(404).json({ error: 'Return not found.' });
+    return null;
+  }
+  if (user.role === 'CUSTOMER' && record.customerId !== user.id) {
+    res.status(403).json({ error: 'You can only act on your own return.' });
+    return null;
+  }
+  const order = await getTenantOrder(user.tenantId, record.orderId);
+  if (!order) {
+    res.status(404).json({ error: 'The order behind this return no longer exists.' });
+    return null;
+  }
+  return { record, order };
+}
+
+app.post(
+  '/api/returns/:id/receive',
+  requireRoles('SUPER_ADMIN', 'BUSINESS_OWNER', 'FULFILLMENT_STAFF'),
+  commerceRoute(async (req, res) => {
+    const loaded = await loadReturnForRequest(req, res);
+    if (!loaded) return;
+
+    const user = getRequestUser(req);
+    const result = await receiveReturn(loaded.record, loaded.order, {
+      state: commerce.state,
+      actor: user.email,
+      actorRole: user.role,
+      warehouseId: loaded.record.lines[0]?.warehouseId ?? '',
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    await saveReturnRequest(result.returnRequest);
+    res.json({ success: true, order: result.order, returnRequest: result.returnRequest });
+  })
+);
+
+app.post(
+  '/api/returns/:id/inspect',
+  requireRoles('SUPER_ADMIN', 'BUSINESS_OWNER', 'FULFILLMENT_STAFF'),
+  commerceRoute(async (req, res) => {
+    const loaded = await loadReturnForRequest(req, res);
+    if (!loaded) return;
+
+    const decision = req.body?.decision === 'REJECT' ? 'REJECT' : 'APPROVE';
+    const user = getRequestUser(req);
+    const result = await inspectReturn(
+      loaded.record,
+      loaded.order,
+      {
+        decision,
+        restock:
+          req.body?.restock && typeof req.body.restock === 'object' ? req.body.restock : undefined,
+        note: typeof req.body?.note === 'string' ? req.body.note : undefined,
+      },
+      { state: commerce.state, actor: user.email, actorRole: user.role }
+    );
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    await Promise.all([saveOrder(result.order), saveReturnRequest(result.returnRequest)]);
+    res.json({ success: true, order: result.order, returnRequest: result.returnRequest });
+  })
+);
+
+app.post(
+  '/api/returns/:id/refund',
+  requireRoles('SUPER_ADMIN', 'BUSINESS_OWNER'),
+  commerceRoute(async (req, res) => {
+    const loaded = await loadReturnForRequest(req, res);
+    if (!loaded) return;
+
+    const refundReference = typeof req.body?.refundReference === 'string'
+      ? req.body.refundReference.trim()
+      : '';
+    const user = getRequestUser(req);
+    const result = markRefundPaid(
+      loaded.record,
+      loaded.order,
+      { actor: user.email, actorRole: user.role, refundReference },
+      {}
+    );
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    await Promise.all([saveOrder(result.order), saveReturnRequest(result.returnRequest)]);
+    res.json({ success: true, order: result.order, returnRequest: result.returnRequest });
   })
 );
 

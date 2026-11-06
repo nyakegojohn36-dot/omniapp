@@ -167,6 +167,11 @@ export interface Order {
   paymentTransactionRef?: string;
   mpesaReceiptCode?: string; // e.g. QKD73HD892
   mpesaPhoneNumber?: string; // e.g. 254752720933
+  /** Set when a Daraja STK push was issued, so the callback can be matched back. */
+  mpesaCheckoutRequestId?: string;
+  mpesaMerchantRequestId?: string;
+  /** The exact shilling amount Safaricom was asked to collect. */
+  mpesaAmountKes?: number;
   etimsInvoiceNumber?: string; // e.g. eTIMS-2026-NBI-00912
   shippingCarrier?: string; // e.g. Fargo Courier, Sendy Boda, G4S Kenya, Pick-up Mtaani
   trackingNumber?: string;

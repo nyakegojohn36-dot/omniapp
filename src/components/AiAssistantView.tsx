@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Order, Product, Tenant, WarehouseInventory } from '../lib/types.ts';
 import { formatCurrency, calculateOrderPricing } from '../lib/pricingEngine.ts';
+import { computeAvailableStock } from '../lib/commerceState.ts';
 
 interface Message {
   id: string;
@@ -66,7 +67,7 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
           reserved += inv.reservedStock;
           quarantine += inv.quarantineStock;
         }
-        const available = Math.max(0, physical - (reserved + quarantine));
+        const available = computeAvailableStock(physical, reserved, quarantine);
         return {
           sku,
           physicalStock: physical,
