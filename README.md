@@ -296,9 +296,102 @@ secret and verify token, and the Daraja keys, live in Secret Manager and are
 mounted on the Cloud Run service once (`--update-secrets`). They are not in the
 workflow and not in the image.
 
-The service gets a `*.run.app` URL. `sokoflow.ai.studio` belongs to AI Studio's
-hosting, so pointing that domain at this service means adding a domain mapping in
-Cloud Run — otherwise the two continue to be separate deployments.
+The service gets a `*.run.app` URL. `sokoflow.ai.studio` is a separate AI Studio
+deployment, not a domain this project controls. For a custom domain, use one you
+own and configure its DNS through a supported Cloud Run frontend.
+
+#### Remaining account-dependent steps
+
+The verified production URL is https://sokoflow-7csey2kz6a-uc.a.run.app.
+The application is deployed, but WhatsApp replies and M-Pesa payments remain
+unconfigured. Do not treat a green deployment as proof that either integration
+can transact.
+
+1. **Owner and real catalogue.** Open the production URL and sign in with the
+   address configured in the repository's `OWNER_EMAILS` variable. Add your actual
+   products, prices, images and stock in Inventory & Catalog. Automatic demo
+   seeding is now disabled, but the existing nine demo products were preserved;
+   this setting does not delete existing data. Once real stock is ready, request
+   removal of the demo records. Do not sell the reference products as real stock.
+
+2. **WhatsApp credentials.** In Meta Business Settings, create a System User
+   token with access to your WhatsApp business assets and the required
+   `whatsapp_business_messaging` / `whatsapp_business_management` permissions.
+   Ensure the business phone is registered. In Google Cloud Console, select
+   `sokoflow-whatsapp`, open Secret Manager → `WHATSAPP_ACCESS_TOKEN` → New version,
+   and save the token there. Never put the token in chat, source or GitHub.
+   Collect your Phone Number ID, WhatsApp Business Account ID and display number
+   from Meta; these IDs are configuration, not the access token.
+
+   After saving a secret version, run this in **Cloud Shell**. It prompts for
+   your IDs; use `META_TEST` for a test number, and `LIVE_PRODUCTION` only for your
+   registered production number.
+
+   ```bash
+   gcloud config set project sokoflow-whatsapp
+   read -r -p 'Phone Number ID: ' PHONE_ID
+   read -r -p 'WhatsApp Business Account ID: ' WABA_ID
+   read -r -p 'Display number (international format): ' DISPLAY_PHONE
+   read -r -p 'Mode (META_TEST or LIVE_PRODUCTION): ' MODE
+   if [[ -n "$PHONE_ID" && -n "$WABA_ID" && -n "$DISPLAY_PHONE" && \
+         ( "$MODE" == META_TEST || "$MODE" == LIVE_PRODUCTION ) ]]; then
+     gcloud run services update sokoflow --region=us-central1 \
+       --update-secrets=WHATSAPP_ACCESS_TOKEN=WHATSAPP_ACCESS_TOKEN:latest \
+       --update-env-vars="WHATSAPP_PHONE_NUMBER_ID=$PHONE_ID,WHATSAPP_WABA_ID=$WABA_ID,WHATSAPP_DISPLAY_PHONE=$DISPLAY_PHONE,WHATSAPP_OPERATING_MODE=$MODE"
+   else
+     echo 'Missing IDs or invalid mode; nothing changed.'
+   fi
+   ```
+
+3. **Meta webhook cutover.** In Meta → WhatsApp → Configuration, set the callback
+   to `https://sokoflow-7csey2kz6a-uc.a.run.app/api/whatsapp/webhook`. Copy the existing
+   verify token from Secret Manager → `WHATSAPP_VERIFY_TOKEN` → latest enabled
+   version → View secret value; use it only in Meta's Verify token field. Select
+   Verify and save, subscribe to `messages`, and send an actual inbound WhatsApp
+   message. Confirm the reply and order flow against your real catalogue. Keep
+   the Africa `omniapp-git` deployment until this test succeeds. Then request its
+   removal and retire the old AI Studio deployment from your AI Studio account.
+
+4. **M-Pesa.** Obtain Daraja credentials for your merchant shortcode. Save new
+   versions in Secret Manager for `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET` and
+   `MPESA_PASSKEY`. Use sandbox credentials for initial testing; production needs
+   Safaricom's go-live approval and production credentials. After saving all three
+   versions, run the following in Cloud Shell. For a Paybill choose
+   `CustomerPayBillOnline`; for a supported Buy Goods integration choose
+   `CustomerBuyGoodsOnline`.
+
+   ```bash
+   gcloud config set project sokoflow-whatsapp
+   read -r -p 'Merchant shortcode: ' SHORTCODE
+   read -r -p 'Environment (sandbox or production): ' MPESA_ENV
+   read -r -p 'Transaction type: ' TRANSACTION_TYPE
+   if [[ -n "$SHORTCODE" && \
+         ( "$MPESA_ENV" == sandbox || "$MPESA_ENV" == production ) && \
+         ( "$TRANSACTION_TYPE" == CustomerPayBillOnline || "$TRANSACTION_TYPE" == CustomerBuyGoodsOnline ) ]]; then
+     gcloud run services update sokoflow --region=us-central1 \
+       --update-secrets="MPESA_CONSUMER_KEY=MPESA_CONSUMER_KEY:latest,MPESA_CONSUMER_SECRET=MPESA_CONSUMER_SECRET:latest,MPESA_PASSKEY=MPESA_PASSKEY:latest" \
+       --update-env-vars="MPESA_SHORTCODE=$SHORTCODE,MPESA_ENVIRONMENT=$MPESA_ENV,MPESA_TRANSACTION_TYPE=$TRANSACTION_TYPE,MPESA_ALLOW_SIMULATED=false,MPESA_CALLBACK_URL=https://sokoflow-7csey2kz6a-uc.a.run.app/api/payments/mpesa/callback"
+   else
+     echo 'Missing shortcode or invalid environment/type; nothing changed.'
+   fi
+   ```
+
+   Check `/health`, then test a sandbox STK push and its callback. With approved
+   production credentials, verify a small payment you authorize and confirm the
+   receipt and order settlement. A configured health flag alone is not a payment
+   test.
+
+5. **Obsolete GitHub secret.** The deployer has no user-managed keys left. Delete
+   `GCP_SA_KEY` from GitHub → repository Settings → Secrets and variables → Actions.
+   The keyless Deploy workflow no longer reads it. Remove any downloaded copy of
+   that revoked service-account JSON key as local housekeeping.
+
+6. **Optional custom domain and IAM hardening.** Choose a domain you own and
+   configure DNS and a supported Cloud Run frontend; do not assume ownership of
+   `sokoflow.ai.studio`. The shared compute service account still has broad roles,
+   including Editor. Further hardening requires separating the runtime and build
+   identities, granting only their needed roles, then testing both deployment
+   and runtime before removing shared privileges.
 
 ---
 

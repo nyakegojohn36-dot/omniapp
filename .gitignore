@@ -13,3 +13,6 @@ coverage/
 # real images under src/assets and public/assets stay tracked.
 .aistudio/
 /*.png
+
+# Local operations scratch files and private IAM policy backups.
+.ops/
