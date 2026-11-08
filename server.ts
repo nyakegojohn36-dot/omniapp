@@ -135,6 +135,10 @@ const commerce = createCommerceRuntime();
 // no caller identity, so it alone uses this configured default tenant.
 const tenants = createTenantRepository({ seed: SEED_TENANTS });
 const tenantId = process.env.DEFAULT_TENANT_ID || SEED_TENANTS[0].id;
+// The reference catalogue is demo stock. Local and preview environments keep it so
+// the app is usable out of the box; production sets this to false so real
+// workspaces start empty instead of selling products the business does not have.
+const seedReferenceCatalogue = process.env.SEED_REFERENCE_CATALOGUE?.trim().toLowerCase() !== 'false';
 
 // Read once at boot: /health reports it, and checkout refuses rather than guesses
 // when the Daraja credentials are absent.
@@ -664,6 +668,7 @@ app.get('/health', (_req: Request, res: Response) => {
     commerce: {
       backend: commerce.backend,
       durable: commerce.backend === 'firestore',
+      referenceCatalogue: seedReferenceCatalogue,
     },
     whatsapp: {
       mode: config.mode,
@@ -732,9 +737,9 @@ app.post(
   requireRoles('SUPER_ADMIN'),
   commerceRoute(async (req, res) => {
     const created = await tenants.create(req.body || {});
-    // A new workspace starts with the reference catalogue so it is immediately
-    // sellable rather than an empty shell nobody can place an order against.
-    await commerce.seed(created.id, SEED_INVENTORIES, SEED_PRODUCTS);
+    // Outside production a new workspace starts with the reference catalogue so it
+    // is immediately demoable rather than an empty shell.
+    if (seedReferenceCatalogue) await commerce.seed(created.id, SEED_INVENTORIES, SEED_PRODUCTS);
     res.status(201).json({ tenant: created });
   })
 );
@@ -1972,7 +1977,7 @@ async function startServer() {
   await bootstrapTenants();
   // Bootstrap the durable catalogue once per process. Idempotent: it only writes
   // when the tenant has no inventory or product records yet.
-  await commerce.seed(tenantId, SEED_INVENTORIES, SEED_PRODUCTS);
+  if (seedReferenceCatalogue) await commerce.seed(tenantId, SEED_INVENTORIES, SEED_PRODUCTS);
   startReservationSweeper(tenantId);
 
   if (!isProd) {

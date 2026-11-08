@@ -250,11 +250,10 @@ One Cloud Run service serves both the API and the built SPA (`server.ts` serves
 
 #### One-time setup
 
-Repository **secret**:
-
-| Name | Value |
-| --- | --- |
-| `GCP_SA_KEY` | a service account JSON key for the deployer |
+CI authenticates keylessly through **Workload Identity Federation**: pool
+`github`, provider `omniapp`, which only accepts OIDC tokens for
+`nyakegojohn36-dot/omniapp`, and grants that repository
+`roles/iam.workloadIdentityUser` on the deployer. No repository secret is needed.
 
 Repository **variables** (public values, so not secrets):
 
@@ -269,10 +268,10 @@ Repository **variables** (public values, so not secrets):
 The deployer service account needs:
 
 ```
-roles/run.admin                roles/cloudbuild.builds.editor
+roles/run.admin                roles/cloudbuild.admin
 roles/iam.serviceAccountUser   roles/artifactregistry.admin
 roles/storage.admin            roles/firebaserules.admin
-roles/datastore.indexAdmin
+roles/datastore.indexAdmin     roles/serviceusage.serviceUsageViewer
 ```
 
 `artifactregistry.admin` rather than `writer`: the first deploy creates the
@@ -284,19 +283,18 @@ The **Cloud Build service account**
 image. Without it the build succeeds and the push fails with `denied`.
 
 Enable these APIs on the project: Cloud Run, Cloud Build, Artifact Registry,
-Firestore, and Identity Toolkit. A long-lived JSON key is used here because it
-needs no extra setup; Workload Identity Federation is the better long-term choice
-and drops `GCP_SA_KEY` in favour of `workload_identity_provider` plus
-`service_account`.
+Firestore, Identity Toolkit, IAM Credentials, Security Token Service and Secret
+Manager.
 
 #### Runtime configuration
 
 The workflow sets only `NODE_ENV`, `FIREBASE_PROJECT_ID`,
-`COMMERCE_STATE_BACKEND` and `OWNER_EMAILS`, using `--update-env-vars` so anything
-else already on the service survives. The WhatsApp access token, app secret and
-phone number ID, and the Daraja keys, are set **once** on the Cloud Run service
-(Console → Cloud Run → sokoflow → Edit & deploy → Variables), ideally from Secret
-Manager. They are not in the workflow and not in the image.
+`COMMERCE_STATE_BACKEND`, `SEED_REFERENCE_CATALOGUE=false` (production starts with
+an empty catalogue, not demo stock) and `OWNER_EMAILS`, using `--update-env-vars`
+so anything else already on the service survives. The WhatsApp access token, app
+secret and verify token, and the Daraja keys, live in Secret Manager and are
+mounted on the Cloud Run service once (`--update-secrets`). They are not in the
+workflow and not in the image.
 
 The service gets a `*.run.app` URL. `sokoflow.ai.studio` belongs to AI Studio's
 hosting, so pointing that domain at this service means adding a domain mapping in

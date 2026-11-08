@@ -51,53 +51,21 @@ jobs:
         with:
           node-version: '22'
 
-      # These three checks exist so a bad secret reports its own defect instead of
-      # surfacing as an opaque failure inside auth@v2, which only writes the file
-      # and reads fields - it never calls Google, so its errors are all about shape.
-      - name: Check GCP_SA_KEY is present
-        env:
-          KEY: ${{ secrets.GCP_SA_KEY }}
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::error::GCP_SA_KEY is empty or does not exist."
-            exit 1
-          fi
-          echo "Secret is ${#KEY} characters long."
-
-      - name: Check GCP_SA_KEY is valid JSON
-        env:
-          KEY: ${{ secrets.GCP_SA_KEY }}
-        run: |
-          printf '%s' "$KEY" > key.json
-          if ! node -e 'JSON.parse(require("fs").readFileSync("key.json", "utf8"))'; then
-            echo "::error::GCP_SA_KEY is not valid JSON. The usual cause is copying from a rendered or pretty-printed view, which puts real line breaks inside private_key."
-            exit 1
-          fi
-          rm -f key.json
-
-      - name: Check GCP_SA_KEY belongs to the deployer
-        env:
-          KEY: ${{ secrets.GCP_SA_KEY }}
-        run: |
-          EMAIL=$(printf '%s' "$KEY" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).client_email||"(none)")}catch(e){console.log("(unparseable)")}})')
-          echo "Key belongs to: $EMAIL"
-          case "$EMAIL" in
-            sokoflow-deployer@*) ;;
-            *) echo "::error::GCP_SA_KEY belongs to $EMAIL, not sokoflow-deployer@sokoflow-whatsapp.iam.gserviceaccount.com."; exit 1 ;;
-          esac
-
+      # Keyless: GitHub's OIDC token is exchanged for short-lived deployer
+      # credentials through Workload Identity Federation. The provider only accepts
+      # tokens minted for this repository, so there is no long-lived key to leak.
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/1015227499573/locations/global/workloadIdentityPools/github/providers/omniapp
+          service_account: sokoflow-deployer@sokoflow-whatsapp.iam.gserviceaccount.com
 
       - uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      # A JSON key from any service account authenticates, so a key that belongs
-      # to the wrong account sails through auth and then fails on permissions a
-      # step later. Say out loud whose credentials these are.
+      # Say out loud whose credentials these are, so a permissions failure a step
+      # later is read against the right identity.
       - name: Show the deploying identity
         run: |
           ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
@@ -138,7 +106,7 @@ jobs:
             --project "$PROJECT_ID" \
             --platform managed \
             --allow-unauthenticated \
-            --update-env-vars "NODE_ENV=production,FIREBASE_PROJECT_ID=${PROJECT_ID},COMMERCE_STATE_BACKEND=firestore,OWNER_EMAILS=${{ vars.OWNER_EMAILS }}"
+            --update-env-vars "NODE_ENV=production,FIREBASE_PROJECT_ID=${PROJECT_ID},COMMERCE_STATE_BACKEND=firestore,SEED_REFERENCE_CATALOGUE=false,OWNER_EMAILS=${{ vars.OWNER_EMAILS }}"
 
       - name: Deploy Firestore rules and indexes
         run: |
