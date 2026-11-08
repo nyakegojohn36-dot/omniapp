@@ -7,34 +7,134 @@ import {
   LogIn,
   ShieldCheck,
 } from 'lucide-react';
-import type { Tenant, User } from '../lib/types.ts';
+import type { PendingBusinessWorkspace, User } from '../lib/types.ts';
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
   signInWithEmailAndPassword,
-  signOut,
   updateProfile,
-  type User as FirebaseAuthUser,
 } from '@firebase/auth';
 import { apiFetch, firebaseAuth, isFirebaseConfigured } from '../lib/firebaseClient.ts';
 
-const PENDING_BUSINESS_WORKSPACE_KEY = 'sokoflow.pending-business-workspace';
-
-interface PendingBusinessWorkspace {
-  email: string;
-  businessName: string;
-  currency: string;
+interface AuthOperationProps {
+  onAuthOperationStart: () => void;
+  onAuthOperationEnd: (startBusiness?: boolean, notice?: string | null) => Promise<void>;
 }
 
-interface LoginViewProps {
-  onSelectTenant: (tenant: Tenant) => void;
-  onLogin: (user: User) => void;
+interface LoginViewProps extends AuthOperationProps {
   initialMode?: 'signin' | 'signup';
 }
 
+interface WorkspaceSetupProps extends AuthOperationProps {
+  user: User;
+  pendingWorkspace: PendingBusinessWorkspace | null;
+  businessSetup: boolean;
+  notice: string | null;
+  onLogout: () => Promise<void>;
+  onCancel?: () => void;
+}
+
+/** Recovery is available to authenticated customers even if draft saving failed. */
+export function WorkspaceSetupView({ user, pendingWorkspace, businessSetup, notice,
+  onAuthOperationStart, onAuthOperationEnd, onLogout, onCancel }: WorkspaceSetupProps) {
+  const [businessName, setBusinessName] = useState(pendingWorkspace?.businessName ?? '');
+  const [currency, setCurrency] = useState(pendingWorkspace?.currency ?? 'KES');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(notice);
+  const identity = firebaseAuth?.currentUser;
+
+  const saveDraft = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!identity || busy) return;
+    setBusy(true);
+    onAuthOperationStart();
+    let result: string | null = null;
+    try {
+      const response = await apiFetch('/api/onboarding/business/pending', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessName, currency }),
+      }, identity);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Could not save business setup.');
+      if (!user.emailVerified) result = 'Setup saved to your account. Verify your email, then continue below.';
+    } catch (error) {
+      result = error instanceof Error ? error.message : 'Could not save business setup.';
+    } finally {
+      setBusy(false);
+      await onAuthOperationEnd(true, result);
+    }
+  };
+
+  const refreshVerification = async () => {
+    if (!identity) return;
+    setBusy(true);
+    onAuthOperationStart();
+    let result: string | null = null;
+    try {
+      await identity.reload();
+      await identity.getIdToken(true);
+      if (!identity.emailVerified) result = 'Your email is not verified yet. Open the verification link, then try again.';
+    } catch (error) {
+      result = error instanceof Error ? error.message : 'Could not check verification.';
+    } finally {
+      setBusy(false);
+      await onAuthOperationEnd(businessSetup, result);
+    }
+  };
+
+  const resendVerification = async () => {
+    if (!identity) return;
+    setBusy(true);
+    try {
+      await sendEmailVerification(identity);
+      setMessage('Verification email sent. Check your inbox and spam folder.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not send verification email.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <main className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="w-full max-w-lg bg-white rounded-2xl border border-slate-200 p-8 space-y-5 shadow-sm">
+        <h1 className="text-2xl font-bold">{businessSetup ? 'Finish business workspace setup' : 'Verify your email'}</h1>
+        <p className="text-sm text-slate-600">Signed in as {user.email}. Save your setup details to resume them on another device.</p>
+        {message && <p role="status" className="text-sm bg-amber-50 border border-amber-200 rounded-lg p-3">{message}</p>}
+        {businessSetup && user.role === 'CUSTOMER' && (
+          <form onSubmit={saveDraft} className="space-y-4">
+            <label className="block text-sm font-medium">Business name
+              <input value={businessName} onChange={(e) => setBusinessName(e.target.value)} required minLength={2} maxLength={80}
+                disabled={busy} className="mt-1 block w-full border rounded-lg p-3" />
+            </label>
+            <label className="block text-sm font-medium">Currency
+              <select value={currency} onChange={(e) => setCurrency(e.target.value)} disabled={busy} className="mt-1 block w-full border rounded-lg p-3">
+                {['KES', 'USD', 'EUR', 'GBP'].map((code) => <option key={code}>{code}</option>)}
+              </select>
+            </label>
+            <p className="text-xs text-slate-500">Your workspace starts with an empty catalogue and no connected WhatsApp or payment provider.</p>
+            <button disabled={busy} className="w-full bg-emerald-700 text-white rounded-lg p-3 disabled:opacity-50">
+              {user.emailVerified ? 'Create business workspace' : 'Save setup'}
+            </button>
+          </form>
+        )}
+        {!user.emailVerified && (
+          <div className="space-y-3">
+            <p className="text-sm">Email verification is required before continuing.</p>
+            <button disabled={busy} onClick={() => void resendVerification()} className="block w-full border rounded-lg p-3 disabled:opacity-50">Resend verification email</button>
+            <button disabled={busy} onClick={() => void refreshVerification()} className="block w-full bg-slate-900 text-white rounded-lg p-3 disabled:opacity-50">I've verified my email — continue</button>
+          </div>
+        )}
+        <div className="flex justify-between text-sm">
+          {onCancel && <button disabled={busy} onClick={onCancel}>Back to storefront</button>}
+          <button disabled={busy} onClick={() => void onLogout()}>Sign out</button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export const LoginView: React.FC<LoginViewProps> = ({
-  onSelectTenant,
-  onLogin,
+  onAuthOperationStart,
+  onAuthOperationEnd,
   initialMode = 'signin',
 }) => {
   const [pageMode, setPageMode] = useState<'signin' | 'signup'>(initialMode);
@@ -56,99 +156,34 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [signupError, setSignupError] = useState<string | null>(null);
   const [signupNotice, setSignupNotice] = useState<string | null>(null);
 
-  const loadProfile = async (firebaseUser: FirebaseAuthUser) => {
-    let pendingWorkspace: PendingBusinessWorkspace | null = null;
-    try {
-      pendingWorkspace = JSON.parse(
-        window.localStorage.getItem(PENDING_BUSINESS_WORKSPACE_KEY) || 'null'
-      );
-    } catch {
-      window.localStorage.removeItem(PENDING_BUSINESS_WORKSPACE_KEY);
-    }
-
-    if (pendingWorkspace && pendingWorkspace.email === firebaseUser.email?.trim().toLowerCase()) {
-      if (!firebaseUser.emailVerified) {
-        if (firebaseAuth) await signOut(firebaseAuth);
-        throw new Error('Verify your email address before finishing workspace setup.');
-      }
-      await firebaseUser.getIdToken(true);
-      const onboardingResponse = await apiFetch('/api/onboarding/business', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          businessName: pendingWorkspace.businessName,
-          currency: pendingWorkspace.currency,
-        }),
-      }, firebaseUser);
-      const onboardingData = await onboardingResponse.json();
-      if (!onboardingResponse.ok || !onboardingData?.user || !onboardingData?.tenant) {
-        throw new Error(onboardingData?.error || 'Could not create your business workspace.');
-      }
-      window.localStorage.removeItem(PENDING_BUSINESS_WORKSPACE_KEY);
-      onSelectTenant(onboardingData.tenant as Tenant);
-      onLogin(onboardingData.user as User);
-      return onboardingData.user as User;
-    }
-    const response = await apiFetch('/api/auth/me', {}, firebaseUser);
-    const data = await response.json();
-    if (!response.ok || !data?.user) {
-      throw new Error(data?.error || 'Could not load your SokoFlow account.');
-    }
-    const user = data.user as User;
-    const tenantResponse = await apiFetch('/api/tenant', {}, firebaseUser);
-    const tenantData = await tenantResponse.json();
-    if (!tenantResponse.ok || !tenantData?.tenant) {
-      throw new Error(tenantData?.error || 'Could not load your business workspace.');
-    }
-    onSelectTenant(tenantData.tenant as Tenant);
-    onLogin(user);
-    return user;
-  };
-
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setSignInError(null);
     if (!firebaseAuth) {
       setSignInError('Firebase Authentication is not configured for this app.');
       return;
     }
     setIsSubmitting(true);
+    onAuthOperationStart();
     try {
       const credential = await signInWithEmailAndPassword(
         firebaseAuth,
         signInEmail.trim(),
         signInPassword
       );
-      let pendingWorkspace: PendingBusinessWorkspace | null = null;
-      try {
-        pendingWorkspace = JSON.parse(
-          window.localStorage.getItem(PENDING_BUSINESS_WORKSPACE_KEY) || 'null'
-        );
-      } catch {
-        window.localStorage.removeItem(PENDING_BUSINESS_WORKSPACE_KEY);
-      }
-      if (
-        pendingWorkspace?.email === credential.user.email?.trim().toLowerCase() &&
-        !credential.user.emailVerified
-      ) {
-        await sendEmailVerification(credential.user);
-        await signOut(firebaseAuth);
-        throw new Error('A verification email was sent. Verify your address, then sign in again to finish workspace setup.');
-      }
-      if (!credential.user.emailVerified && import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true') {
-        await signOut(firebaseAuth);
-        throw new Error('Verify your email address using the link we sent before signing in.');
-      }
-      await loadProfile(credential.user);
+      await credential.user.getIdToken(true);
     } catch (error) {
       setSignInError(error instanceof Error ? error.message : 'Sign-in failed. Please try again.');
     } finally {
       setIsSubmitting(false);
+      await onAuthOperationEnd();
     }
   };
 
   const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setSignupError(null);
 
     if (signupPassword && signupConfirmPassword && signupPassword !== signupConfirmPassword) {
@@ -165,42 +200,40 @@ export const LoginView: React.FC<LoginViewProps> = ({
     }
 
     setIsSubmitting(true);
+    const isBusiness = signupMode === 'business';
+    let accountCreated = false;
+    let notice: string | null = null;
+    onAuthOperationStart();
     try {
       const credential = await createUserWithEmailAndPassword(
         firebaseAuth,
         signupEmail.trim(),
         signupPassword
       );
+      accountCreated = true;
       await updateProfile(credential.user, { displayName: signupName.trim() });
-      if (signupMode === 'business') {
-        window.localStorage.setItem(PENDING_BUSINESS_WORKSPACE_KEY, JSON.stringify({
-          email: signupEmail.trim().toLowerCase(),
-          businessName: businessName.trim(),
-          currency: businessCurrency,
-        } satisfies PendingBusinessWorkspace));
+      await credential.user.getIdToken(true);
+      if (isBusiness) {
+        const response = await apiFetch('/api/onboarding/business/pending', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ businessName: businessName.trim(), currency: businessCurrency }),
+        }, credential.user);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || 'Business setup could not be saved. Retry from workspace setup.');
       }
-      let verificationSent = true;
+      notice = 'Check your email for a verification link. You can continue setup on any device using this account.';
       try {
         await sendEmailVerification(credential.user);
       } catch (error) {
-        verificationSent = false;
+        notice = 'Your account was created, but the verification email could not be sent. Request another email from workspace setup.';
         console.warn('Email verification notice:', error);
       }
-      if (signupMode === 'business') {
-        await signOut(firebaseAuth);
-        setSignupNotice(verificationSent
-          ? 'Verify your email, then sign in with this address to finish creating your business workspace.'
-          : 'Your account was created, but the verification email could not be sent. Sign in to request another email.');
-      } else if (import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true') {
-        await signOut(firebaseAuth);
-        setSignupNotice('Check your email and verify your address. You can sign in after verification.');
-      } else {
-        await loadProfile(credential.user);
-      }
     } catch (error) {
-      setSignupError(error instanceof Error ? error.message : 'Could not create your account.');
+      notice = error instanceof Error ? error.message : 'Could not create your account.';
+      setSignupError(notice);
     } finally {
       setIsSubmitting(false);
+      await onAuthOperationEnd(accountCreated && isBusiness, accountCreated ? notice : null);
     }
   };
 
@@ -255,6 +288,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
           {/* Dedicated Page Toggle Tabs */}
           <div className="mt-6 inline-flex p-1 bg-slate-200 rounded-xl shadow-inner">
             <button
+              disabled={isSubmitting}
               onClick={() => {
                 setPageMode('signin');
                 setSignInError(null);
@@ -270,6 +304,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </button>
 
             <button
+              disabled={isSubmitting}
               onClick={() => {
                 setPageMode('signup');
                 setSignupError(null);
@@ -292,6 +327,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
             <div className="mt-4 inline-flex p-1 bg-white border border-slate-200 rounded-xl" role="group" aria-label="Account type">
               <button
                 type="button"
+                disabled={isSubmitting}
                 aria-pressed={signupMode === 'customer'}
                 onClick={() => setSignupMode('customer')}
                 className={`px-4 py-2 text-xs font-semibold rounded-lg ${signupMode === 'customer' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
@@ -300,6 +336,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               </button>
               <button
                 type="button"
+                disabled={isSubmitting}
                 aria-pressed={signupMode === 'business'}
                 onClick={() => setSignupMode('business')}
                 className={`px-4 py-2 text-xs font-semibold rounded-lg ${signupMode === 'business' ? 'bg-emerald-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
@@ -340,7 +377,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 </span>
                 <p className="text-emerald-800 text-[11px] leading-relaxed">
                   {signupMode === 'business'
-                    ? 'Your verified account becomes the first Business Owner. Your catalogue starts empty. WhatsApp stays in demo mode and online payments stay disabled until they are configured.'
+                    ? 'Your verified account becomes the first Business Owner. Your catalogue starts empty. WhatsApp and online payments remain disconnected until authorized integrations are configured.'
                     : <>Self-registration creates a <strong>Customer</strong> account. Staff access is granted by the Business Owner for that workspace.</>}
                 </p>
               </div>
@@ -359,7 +396,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
               </div>
             )}
 
-            <form onSubmit={handleSignUpSubmit} className="space-y-4">
+            <form onSubmit={handleSignUpSubmit}>
+              <fieldset disabled={isSubmitting} className="space-y-4">
               {signupMode === 'business' && (
                 <>
                   <div>
@@ -474,6 +512,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                   </>
                 )}
               </button>
+              </fieldset>
             </form>
 
             <div className="mt-5 text-center text-xs text-slate-500 pt-3 border-t border-slate-100">
@@ -519,7 +558,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 </div>
               )}
 
-              <form onSubmit={handleCredentialsSubmit} className="space-y-4">
+              <form onSubmit={handleCredentialsSubmit}>
+                <fieldset disabled={isSubmitting} className="space-y-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Registered Email Address
@@ -562,6 +602,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     </>
                   )}
                 </button>
+                </fieldset>
               </form>
 
               <div className="mt-5 text-center text-xs text-slate-500 pt-3 border-t border-slate-100">

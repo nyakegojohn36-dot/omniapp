@@ -5,6 +5,7 @@ import { AiAssistantView } from './AiAssistantView.tsx';
 import { WhatsAppChannelView } from './WhatsAppChannelView.tsx';
 
 interface ConversationalSalesViewProps {
+  canManageSharedWhatsApp?: boolean;
   tenant: Tenant;
   products: Product[];
   inventories: WarehouseInventory[];
@@ -24,6 +25,7 @@ export const ConversationalSalesView: React.FC<ConversationalSalesViewProps> = (
   onNavigateToOrder,
   onNavigateToSupport,
   initialSubTab = 'assistant',
+  canManageSharedWhatsApp = false,
 }) => {
   const [activeChannel, setActiveChannel] = useState<'assistant' | 'whatsapp'>(initialSubTab);
 
@@ -48,7 +50,7 @@ export const ConversationalSalesView: React.FC<ConversationalSalesViewProps> = (
             </div>
             <div className="text-left">
               <div className="leading-tight">AI Sales Assistant</div>
-              <div className="text-[10px] text-slate-400 font-normal">Autonomous Advisor</div>
+              <div className="text-[10px] text-slate-400 font-normal">Gemini · Read-only Advisor</div>
             </div>
           </button>
 
@@ -77,14 +79,10 @@ export const ConversationalSalesView: React.FC<ConversationalSalesViewProps> = (
       {/* Selected Channel View Content */}
       <div className="transition-all duration-200">
         {activeChannel === 'assistant' ? (
-          <AiAssistantView
-            tenant={tenant}
-            products={products}
-            inventories={inventories}
-            orders={orders}
-          />
+          <AiAssistantView key={tenant.id} tenant={tenant} />
         ) : (
           <WhatsAppChannelView
+            canManageSharedWhatsApp={canManageSharedWhatsApp}
             tenant={tenant}
             products={products}
             orders={orders}

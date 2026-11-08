@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { NextFunction, Request, Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
+import type { AddressInfo } from 'node:net';
 import {
+  allowsUnverifiedOnboardingRequest,
+  canManageSharedWhatsApp,
+  getPendingBusinessWorkspace,
+  savePendingBusinessWorkspace,
+  requireSharedWhatsAppAccess,
+  sharedWhatsAppAccessPolicy,
+  type AuthenticatedUser,
   getTenantOrder,
   listTenantOrders,
   listTenantReturns,
@@ -135,6 +143,14 @@ test('firebaseAdmin: an unreachable return store fails closed too', async () => 
   }
 });
 
+test('firebaseAdmin: pending onboarding fails closed when Firestore is unavailable', async () => {
+  setFirestoreForTests(unreachableFirestore());
+  try {
+    await assert.rejects(() => getPendingBusinessWorkspace('customer'), unavailable);
+    await assert.rejects(() => savePendingBusinessWorkspace('customer', { businessName: 'Acacia', currency: 'KES' }), unavailable);
+  } finally { setFirestoreForTests(null); }
+});
+
 test('firebaseAdmin: workspace provisioning fails closed when Firestore is unavailable', async () => {
   setFirestoreForTests(unreachableFirestore());
 
@@ -146,6 +162,184 @@ test('firebaseAdmin: workspace provisioning fails closed when Firestore is unava
   } finally {
     setFirestoreForTests(null);
   }
+});
+
+function withProviderConfiguration(run: () => void) {
+  const old = { OWNER_EMAILS: process.env.OWNER_EMAILS, DEFAULT_TENANT_ID: process.env.DEFAULT_TENANT_ID };
+  process.env.OWNER_EMAILS = 'operator@example.test';
+  process.env.DEFAULT_TENANT_ID = 'tenant-shared';
+  try { run(); } finally {
+    for (const [key, value] of Object.entries(old)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
+
+const providerOperator: AuthenticatedUser = {
+  id: 'operator', name: 'Operator', email: 'operator@example.test',
+  role: 'BUSINESS_OWNER', tenantId: 'tenant-shared', emailVerified: true,
+};
+
+test('shared WhatsApp capability denies self-service owners, staff and unverified operators', () => {
+  withProviderConfiguration(() => {
+    const denied: Array<AuthenticatedUser | undefined> = [
+      undefined,
+      { ...providerOperator, role: 'CUSTOMER' },
+      { ...providerOperator, role: 'SUPPORT_STAFF' },
+      { ...providerOperator, email: 'self-service@example.test' },
+      { ...providerOperator, tenantId: 'tenant-self-service' },
+      { ...providerOperator, emailVerified: false },
+      { ...providerOperator, role: 'SUPER_ADMIN', emailVerified: false },
+    ];
+    for (const user of denied) {
+      assert.equal(canManageSharedWhatsApp(user), false);
+      let status = 0;
+      let nextCalled = false;
+      const response = { status(code: number) { status = code; return this; }, json() { return this; } } as Response;
+      requireSharedWhatsAppAccess({ authUser: user } as Request, response, (() => { nextCalled = true; }) as NextFunction);
+      assert.equal(status, 403);
+      assert.equal(nextCalled, false);
+    }
+  });
+});
+
+test('shared WhatsApp capability permits verified platform administrators and default-tenant allowlisted owners', () => {
+  withProviderConfiguration(() => {
+    const allowed = [providerOperator,
+      { ...providerOperator, email: '  OPERATOR@example.test  ' },
+      { ...providerOperator, role: 'SUPER_ADMIN' as const, tenantId: 'tenant-admin', email: 'admin@example.test' },
+    ];
+    for (const user of allowed) {
+      assert.equal(canManageSharedWhatsApp(user), true);
+      let nextCalled = false;
+      requireSharedWhatsAppAccess({ authUser: user } as Request, { status: assert.fail } as unknown as Response,
+        (() => { nextCalled = true; }) as NextFunction);
+      assert.equal(nextCalled, true);
+    }
+    process.env.OWNER_EMAILS = '';
+    const previousEmail = process.env.OWNER_EMAIL;
+    delete process.env.OWNER_EMAIL;
+    try { assert.equal(canManageSharedWhatsApp(providerOperator), false); } finally {
+      if (previousEmail !== undefined) process.env.OWNER_EMAIL = previousEmail;
+    }
+  });
+});
+
+test('shared WhatsApp HTTP policy guards all controls, including future routes, inside the API mount', async () => {
+  const app = express();
+  app.use('/api', (req, _res, next) => {
+    req.authUser = { ...providerOperator, tenantId: 'tenant-other', email: 'self-service@example.test' };
+    next();
+  });
+  app.use('/api/whatsapp', sharedWhatsAppAccessPolicy);
+  app.all('/api/whatsapp/*', (_req, res) => { res.json({ allowed: true }); });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/whatsapp`;
+  try {
+    for (const [method, path] of [
+      ['POST', '/config'], ['POST', '/send'], ['POST', '/messages'], ['GET', '/logs'],
+      ['POST', '/reset'], ['GET', '/status'], ['POST', '/verify-code'],
+      ['POST', '/request-code'], ['POST', '/register'], ['DELETE', '/future-operation'],
+      ['POST', '/webhook'], ['POST', '/config/'],
+    ]) {
+      assert.equal((await fetch(base + path, { method })).status, 403, `${method} ${path}`);
+    }
+    for (const path of ['/config', '/messages', '/config/', '/messages?tenantId=another']) {
+      assert.equal((await fetch(base + path)).status, 200, `tenant-safe read ${path}`);
+    }
+  } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+});
+
+test('unverified onboarding exception uses original URL and never permits provisioning or commerce access', async () => {
+  const app = express();
+  app.use('/api', (req, res) => { res.sendStatus(allowsUnverifiedOnboardingRequest(req) ? 200 : 403); });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    for (const [method, path, status] of [
+      ['GET', '/api/auth/me', 200], ['GET', '/api/auth/me?refresh=1', 200],
+      ['GET', '/api/onboarding/business/pending', 200], ['PUT', '/api/onboarding/business/pending/', 200],
+      ['POST', '/api/onboarding/business', 403], ['GET', '/api/products', 403],
+      ['POST', '/api/auth/me', 403], ['PUT', '/api/onboarding/business/pending/other', 403],
+    ] as const) {
+      assert.equal((await fetch(base + path, { method })).status, status, `${method} ${path}`);
+    }
+  } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+});
+
+/** Transaction fixture buffers writes until commit and forbids reads after writes. */
+function transactionalFirestoreFixture() {
+  type RecordData = Record<string, unknown>;
+  type Ref = { path: string; get: () => Promise<{ exists: boolean; data: () => RecordData | undefined }> };
+  const records = new Map<string, RecordData>();
+  const db = {
+    collection: (collection: string) => ({ doc: (id: string): Ref => {
+      const path = `${collection}/${id}`;
+      return { path, get: async () => ({ exists: records.has(path), data: () => records.get(path) }) };
+    } }),
+    runTransaction: async (run: (transaction: unknown) => Promise<unknown>) => {
+      const writes: Array<() => void> = [];
+      const transaction = {
+        get: (ref: Ref) => { assert.equal(writes.length, 0, 'reads must precede writes'); return ref.get(); },
+        set: (ref: Ref, data: RecordData) => writes.push(() => records.set(ref.path, structuredClone(data))),
+        create: (ref: Ref, data: RecordData) => {
+          assert.equal(records.has(ref.path), false);
+          writes.push(() => records.set(ref.path, structuredClone(data)));
+        },
+        update: (ref: Ref, data: RecordData) => writes.push(() => records.set(ref.path, { ...records.get(ref.path), ...data })),
+        delete: (ref: Ref) => writes.push(() => records.delete(ref.path)),
+      };
+      const result = await run(transaction);
+      for (const write of writes) write();
+      return result;
+    },
+  } as unknown as Firestore;
+  return { db, records };
+}
+
+test('onboarding drafts persist per UID, reject noncustomers and clear with atomic/idempotent provisioning', async () => {
+  const { db, records } = transactionalFirestoreFixture();
+  const draft = { businessName: 'Acacia Market', currency: 'KES' };
+  for (const id of ['customer-a', 'customer-b']) records.set(`users/${id}`, { ...providerOperator, id, role: 'CUSTOMER' });
+  records.set('users/staff', { ...providerOperator, role: 'SUPPORT_STAFF' });
+  const tenant: Tenant = {
+    id: 'tenant-acacia', name: draft.businessName, slug: 'acacia', currency: 'KES',
+    locale: 'en-KE', timezone: 'Africa/Nairobi', taxRatePercent: 0, taxInclusive: true,
+    reservationTTLMinutes: 15, channels: ['WEB'],
+  };
+  setFirestoreForTests(db);
+  try {
+    assert.equal(await getPendingBusinessWorkspace('customer-a'), null);
+    await savePendingBusinessWorkspace('customer-a', draft);
+    const firstDraftKey = [...records.keys()].find((key) => key.startsWith('businessOnboarding/'))!;
+    await savePendingBusinessWorkspace('customer-b', { ...draft, businessName: 'Another Business' });
+    // Fresh helpers read back account-scoped state without a browser-local cache.
+    assert.deepEqual(await getPendingBusinessWorkspace('customer-a'), draft);
+    assert.deepEqual(await getPendingBusinessWorkspace('customer-b'), { ...draft, businessName: 'Another Business' });
+    assert.equal(await getPendingBusinessWorkspace('unrelated'), null);
+    await assert.rejects(() => savePendingBusinessWorkspace('staff', draft), WorkspaceProvisioningConflictError);
+    await assert.rejects(() => savePendingBusinessWorkspace('missing', draft), WorkspaceProvisioningConflictError);
+
+    records.set(`tenants/${tenant.id}`, { ...tenant });
+    await assert.rejects(() => provisionTenantForOwner(tenant, 'customer-a'), WorkspaceProvisioningConflictError);
+    assert.deepEqual(await getPendingBusinessWorkspace('customer-a'), draft, 'failed provisioning retains draft');
+    assert.equal(records.get('users/customer-a')?.role, 'CUSTOMER');
+    records.delete(`tenants/${tenant.id}`);
+
+    const owner = await provisionTenantForOwner(tenant, 'customer-a');
+    assert.equal(owner.role, 'BUSINESS_OWNER');
+    assert.equal(owner.tenantId, tenant.id);
+    assert.equal(await getPendingBusinessWorkspace('customer-a'), null);
+    assert.equal((await getPendingBusinessWorkspace('customer-b'))?.businessName, 'Another Business');
+    await assert.rejects(() => savePendingBusinessWorkspace('customer-a', draft), WorkspaceProvisioningConflictError);
+    records.set(firstDraftKey, { ...draft });
+    await provisionTenantForOwner(tenant, 'customer-a');
+    assert.equal(await getPendingBusinessWorkspace('customer-a'), null);
+    assert.deepEqual(records.get(`tenants/${tenant.id}`), tenant);
+    assert.equal([...records.keys()].filter((key) => key.startsWith('tenants/')).length, 1);
+  } finally { setFirestoreForTests(null); }
 });
 
 if (process.env.FIRESTORE_EMULATOR_HOST) {
@@ -179,7 +373,10 @@ if (process.env.FIRESTORE_EMULATOR_HOST) {
         role: 'CUSTOMER',
       });
 
+      await savePendingBusinessWorkspace(ownerId, { businessName: tenant.name, currency: tenant.currency });
+      assert.equal((await getPendingBusinessWorkspace(ownerId))?.businessName, tenant.name);
       const owner = await provisionTenantForOwner(tenant, ownerId);
+      assert.equal(await getPendingBusinessWorkspace(ownerId), null);
       assert.equal(owner.role, 'BUSINESS_OWNER');
       assert.equal(owner.tenantId, tenantId);
       assert.equal((await db.collection('tenants').doc(tenantId).get()).exists, true);

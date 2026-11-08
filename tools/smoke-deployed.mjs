@@ -28,6 +28,19 @@ const healthText = await healthResponse.text();
 check('health responds 200', healthResponse.ok, String(healthResponse.status));
 check('health has a commerce block', healthText.includes('"commerce"'), healthText.slice(0, 120));
 check('commerce is durable (firestore, not memory)', healthText.includes('"durable":true'));
+const health = JSON.parse(healthText);
+check('production does not seed demo products', health.commerce?.referenceCatalogue === false);
+if (process.env.REQUIRE_GEMINI === 'true') {
+  check('Gemini server configuration is enabled', health.assistant?.configured === true);
+  check('assistant is read-only', health.assistant?.readOnly === true);
+}
+
+for (const endpoint of ['/api/onboarding/business/pending', '/api/assistant/chat']) {
+  const response = await fetch(`${base}${endpoint}`, endpoint.endsWith('/chat')
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"text":"stock"}' }
+    : {});
+  check(`${endpoint} rejects unauthenticated access`, response.status === 401, String(response.status));
+}
 
 const indexResponse = await fetch(`${base}/`);
 const indexHtml = await indexResponse.text();

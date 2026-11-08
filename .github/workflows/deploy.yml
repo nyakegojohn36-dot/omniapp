@@ -106,7 +106,7 @@ jobs:
             --project "$PROJECT_ID" \
             --platform managed \
             --allow-unauthenticated \
-            --update-env-vars "NODE_ENV=production,FIREBASE_PROJECT_ID=${PROJECT_ID},COMMERCE_STATE_BACKEND=firestore,SEED_REFERENCE_CATALOGUE=false,OWNER_EMAILS=${{ vars.OWNER_EMAILS }}"
+            --update-env-vars "NODE_ENV=production,FIREBASE_PROJECT_ID=${PROJECT_ID},COMMERCE_STATE_BACKEND=firestore,SEED_REFERENCE_CATALOGUE=false,GEMINI_ENABLED=true,GEMINI_MODEL=gemini-3.8-flash,GEMINI_LOCATION=global,OWNER_EMAILS=${{ vars.OWNER_EMAILS }}"
 
       - name: Deploy Firestore rules and indexes
         run: |
@@ -128,4 +128,4 @@ jobs:
             --region "$REGION" --project "$PROJECT_ID" \
             --format 'value(status.url)')
           echo "Service URL: $URL"
-          node tools/smoke-deployed.mjs "$URL" "$PROJECT_ID"
+          REQUIRE_GEMINI=true node tools/smoke-deployed.mjs "$URL" "$PROJECT_ID"

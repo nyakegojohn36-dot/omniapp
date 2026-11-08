@@ -51,6 +51,7 @@ const ADDRESS_FIELDS: { key: keyof OrderAddress; label: string; placeholder: str
 ];
 
 interface CustomerSupportWorkspaceViewProps {
+  canManageSharedWhatsApp?: boolean;
   tenant: Tenant;
   orders: Order[];
   products: Product[];
@@ -66,6 +67,7 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
   inventories,
   currentRole,
   onUpdateOrder,
+  canManageSharedWhatsApp = false,
 }) => {
   const [cases, setCases] = useState<SupportCase[]>(SEED_SUPPORT_CASES);
   const [activeCaseId, setActiveCaseId] = useState<string>(cases[0]?.id || 'CAS-401');
@@ -200,6 +202,10 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
   const handleSendReply = async (textToSend?: string) => {
     const text = (textToSend || replyText).trim();
     if (!text || !activeCase || isSendingReply) return;
+    if (!canManageSharedWhatsApp) {
+      setActionNotice('WhatsApp replies are unavailable: this account is not authorized to use the shared provider.');
+      return;
+    }
 
     setIsSendingReply(true);
 
@@ -629,6 +635,7 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
               <div className="p-3 border-t border-slate-200">
                 {composerTab === 'REPLY' ? (
                   <div className="space-y-2">
+                    {!canManageSharedWhatsApp && <p className="text-xs text-amber-800">WhatsApp is not connected for this account. Shared provider replies require platform operator authorization.</p>}
                     {/* Active Channel & Agent indicator */}
                     <div className="px-3 py-1.5 bg-slate-900 text-white flex items-center justify-between text-[11px] font-medium rounded-lg shadow-2xs">
                       <div className="flex items-center gap-1.5">
@@ -650,13 +657,13 @@ export const CustomerSupportWorkspaceView: React.FC<CustomerSupportWorkspaceView
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleSendReply();
                         }}
-                        disabled={isSendingReply}
+                        disabled={isSendingReply || !canManageSharedWhatsApp}
                         placeholder={`Type official reply to ${activeCase.customerName || 'customer'}...`}
                         className="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
                       />
                       <button
                         onClick={() => handleSendReply()}
-                        disabled={!replyText.trim() || isSendingReply}
+                        disabled={!replyText.trim() || isSendingReply || !canManageSharedWhatsApp}
                         className="px-4 py-2.5 bg-[#25D366] hover:bg-[#20bd5a] disabled:opacity-40 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-2xs flex items-center gap-1.5 shrink-0"
                         title="Send Customer Reply"
                       >

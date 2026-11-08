@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { onAuthStateChanged, signOut } from '@firebase/auth';
+import { onAuthStateChanged, signOut, type User as FirebaseUser } from '@firebase/auth';
 import { TopBar } from './components/TopBar.tsx';
-import { LoginView } from './components/LoginView.tsx';
+import { LoginView, WorkspaceSetupView } from './components/LoginView.tsx';
 import { OverviewDashboard } from './components/OverviewDashboard.tsx';
 import { CustomerStorefrontView } from './components/CustomerStorefrontView.tsx';
 import { InventoryCatalogView } from './components/InventoryCatalogView.tsx';
@@ -16,33 +16,22 @@ import { CustomerSupportWorkspaceView } from './components/CustomerSupportWorksp
 import { BusinessOwnerWorkspace } from './components/BusinessOwnerWorkspace.tsx';
 import { EmbeddedWhatsAppWidget } from './components/EmbeddedWhatsAppWidget.tsx';
 import { ShieldAlert } from 'lucide-react';
-import {
-  SEED_CUSTOMER_PROFILES,
-  SEED_TENANTS,
-  SEED_USERS,
-} from './lib/sampleData.ts';
+import { SEED_TENANTS } from './lib/sampleData.ts';
 import { availabilityFromMap, type AvailabilityMap } from './lib/availabilitySource.ts';
-import { Order, Product, Tenant, UserRole, WarehouseInventory, StockReservation, User } from './lib/types.ts';
+import { Order, Product, Tenant, UserRole, WarehouseInventory, StockReservation, User, PendingBusinessWorkspace } from './lib/types.ts';
 import { isTabPermitted, getSafeDefaultTab, TabId } from './lib/permissions.ts';
 import { apiFetch, firebaseAuth } from './lib/firebaseClient.ts';
-
-const INITIAL_WORKSPACE_USERS: User[] = [
-  ...SEED_USERS,
-  ...SEED_CUSTOMER_PROFILES
-    .filter((c) => !SEED_USERS.some((u) => u.email === c.email))
-    .map((c) => ({
-      id: c.id,
-      tenantId: 'tenant-nordic',
-      name: c.name,
-      email: c.email,
-      role: 'CUSTOMER' as UserRole,
-    })),
-];
+import { createSessionCoordinator, loadWorkspaceSession, type WorkspaceSession } from './lib/workspaceSession.ts';
 
 export default function App() {
-  const [tenants] = useState<Tenant[]>(SEED_TENANTS);
   const [currentTenant, setCurrentTenant] = useState<Tenant>(SEED_TENANTS[0]);
-  const [dynamicUsers, setDynamicUsers] = useState<User[]>(INITIAL_WORKSPACE_USERS);
+  const [dynamicUsers, setDynamicUsers] = useState<User[]>([]);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [pendingWorkspace, setPendingWorkspace] = useState<PendingBusinessWorkspace | null>(null);
+  const [setupRequested, setSetupRequested] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+  const sessionScope = useRef(0);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [currentRole, setCurrentRole] = useState<UserRole>('CUSTOMER');
@@ -65,11 +54,13 @@ export default function App() {
   const hasLoggedInventoryError = useRef(false);
 
   const refreshInventory = useCallback(async () => {
-    if (!currentUser) return;
+    if (!currentUser || !workspaceReady) return;
+    const scope = sessionScope.current;
+    const identity = firebaseAuth?.currentUser;
     try {
       const [productsResponse, inventoryResponse] = await Promise.all([
-        apiFetch('/api/products'),
-        apiFetch('/api/inventory'),
+        apiFetch('/api/products', {}, identity),
+        apiFetch('/api/inventory', {}, identity),
       ]);
       const productData = await productsResponse.json().catch(() => ({}));
       const inventoryData = await inventoryResponse.json().catch(() => ({}));
@@ -81,6 +72,7 @@ export default function App() {
         throw new Error(inventoryData?.error || `Loading stock levels failed (HTTP ${inventoryResponse.status}).`);
       }
 
+      if (scope !== sessionScope.current) return;
       setProducts(productData.products);
       setAvailabilityMap(inventoryData.availability);
       // Staff receive per-warehouse rows and reservations; customers receive only
@@ -89,12 +81,13 @@ export default function App() {
       setReservations(Array.isArray(inventoryData.reservations) ? inventoryData.reservations : []);
       hasLoggedInventoryError.current = false;
     } catch (error) {
+      if (scope !== sessionScope.current) return;
       if (!hasLoggedInventoryError.current) {
         console.error('Inventory synchronization failed:', error);
         hasLoggedInventoryError.current = true;
       }
     }
-  }, [currentUser]);
+  }, [currentUser, workspaceReady]);
 
   /** Posts a stock command, logs a rejection, and lets the caller refresh. */
   const stockAction = useCallback(async (path: string, body: unknown) => {
@@ -113,7 +106,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUser || !workspaceReady) {
       setProducts([]);
       setAvailabilityMap({});
       setInventories([]);
@@ -125,6 +118,54 @@ export default function App() {
     return () => clearInterval(syncInterval);
   }, [currentUser?.id, refreshInventory]);
 
+  const sessionCoordinator = useMemo(() => createSessionCoordinator<FirebaseUser, WorkspaceSession>(
+    (identity) => loadWorkspaceSession(
+      (path, init) => apiFetch(path, init, identity),
+      import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true'
+    ),
+    (session) => {
+      sessionScope.current++;
+      setProducts([]); setOrders([]); setAvailabilityMap({});
+      setInventories([]); setReservations([]); setDynamicUsers([]);
+      setOrderSyncStatus('loading'); setUserSyncStatus('loading');
+      setSessionError(null);
+      setCurrentUser(session?.user ?? null);
+      setPendingWorkspace(session?.pendingWorkspace ?? null);
+      setWorkspaceReady(Boolean(session?.tenant));
+      if (session) {
+        if (session.tenant) setCurrentTenant(session.tenant);
+        setCurrentRole(session.user.role);
+        setActiveTab(session.user.role === 'CUSTOMER' ? 'storefront' : 'overview');
+        if (session.user.role !== 'CUSTOMER') setSetupRequested(false);
+      } else {
+        setSetupRequested(false); setSessionNotice(null);
+      }
+      setAuthReady(true);
+    },
+    (error) => {
+      sessionScope.current++;
+      setCurrentUser(null); setWorkspaceReady(false);
+      setSessionError(error instanceof Error ? error.message : 'Could not load your workspace.');
+      setAuthReady(true);
+    },
+    (identity) => {
+      // Stop old workspace views and mirror responses before loading another account.
+      sessionScope.current++;
+      if (identity) setAuthReady(false);
+    }
+  ), []);
+
+  const beginAuthOperation = () => {
+    sessionCoordinator.suspend();
+    sessionScope.current++;
+  };
+  const resumeSession = async (startBusiness = false, notice: string | null = null) => {
+    if (startBusiness) setSetupRequested(true);
+    setSessionNotice(notice);
+    setSessionError(null);
+    await sessionCoordinator.resume(firebaseAuth?.currentUser ?? null);
+  };
+
   useEffect(() => {
     const auth = firebaseAuth;
     if (!auth) {
@@ -132,54 +173,26 @@ export default function App() {
       return;
     }
 
-    return onAuthStateChanged(auth, async (firebaseUser) => {
-      if (!firebaseUser) {
-        setCurrentUser(null);
-        setAuthReady(true);
-        return;
-      }
-      if (!firebaseUser.emailVerified && import.meta.env.VITE_REQUIRE_EMAIL_VERIFIED === 'true') {
-        setCurrentUser(null);
-        setAuthReady(true);
-        return;
-      }
-
-      try {
-        const response = await apiFetch('/api/auth/me', {}, firebaseUser);
-        const data = await response.json();
-        if (!response.ok || !data?.user) {
-          throw new Error(data?.error || `Could not restore sign-in (HTTP ${response.status}).`);
-        }
-        const user = data.user as User;
-        const tenantResponse = await apiFetch('/api/tenant', {}, firebaseUser);
-        const tenantData = await tenantResponse.json();
-        if (!tenantResponse.ok || !tenantData?.tenant) {
-          throw new Error(tenantData?.error || `Could not load workspace (HTTP ${tenantResponse.status}).`);
-        }
-        setCurrentTenant(tenantData.tenant as Tenant);
-        setCurrentUser(user);
-        setCurrentRole(user.role);
-        setActiveTab(user.role === 'CUSTOMER' ? 'storefront' : 'overview');
-      } catch (error) {
-        console.error('Restoring Firebase sign-in failed:', error);
-        await signOut(auth);
-      } finally {
-        setAuthReady(true);
-      }
+    const unsubscribe = onAuthStateChanged(auth, (identity) => {
+      void sessionCoordinator.restore(identity);
     });
-  }, [tenants]);
+    return () => { unsubscribe(); sessionCoordinator.invalidate(); sessionScope.current++; };
+  }, [sessionCoordinator]);
 
   // Synchronize orders across WhatsApp webhooks and system UI in real time
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUser || !workspaceReady) {
       setOrders([]);
       setOrderSyncStatus('loading');
       return;
     }
     let hasLoggedSyncError = false;
+    let cancelled = false;
+    const scope = sessionScope.current;
+    const identity = firebaseAuth?.currentUser;
     const fetchSyncedOrders = async () => {
       try {
-        const response = await apiFetch('/api/orders');
+        const response = await apiFetch('/api/orders', {}, identity);
         if (!response.ok) {
           throw new Error(`Order sync failed with HTTP ${response.status}`);
         }
@@ -187,10 +200,12 @@ export default function App() {
         if (!Array.isArray(data?.orders)) {
           throw new Error('Order sync returned an invalid response.');
         }
+        if (cancelled || scope !== sessionScope.current) return;
         setOrders(data.orders);
         setOrderSyncStatus('connected');
         hasLoggedSyncError = false;
       } catch (error) {
+        if (cancelled || scope !== sessionScope.current) return;
         setOrderSyncStatus('error');
         if (!hasLoggedSyncError) {
           console.error('Order synchronization failed:', error);
@@ -201,20 +216,24 @@ export default function App() {
 
     fetchSyncedOrders();
     const syncInterval = setInterval(fetchSyncedOrders, 3000);
-    return () => clearInterval(syncInterval);
-  }, [currentUser?.id]);
+    return () => { cancelled = true; clearInterval(syncInterval); };
+  }, [currentUser, workspaceReady]);
 
   const fetchSyncedUsers = async () => {
-    if (!currentUser || !['BUSINESS_OWNER', 'SUPER_ADMIN'].includes(currentRole)) return;
+    if (!currentUser || !workspaceReady || !['BUSINESS_OWNER', 'SUPER_ADMIN'].includes(currentRole)) return;
+    const scope = sessionScope.current;
+    const identity = firebaseAuth?.currentUser;
     try {
-      const response = await apiFetch('/api/users');
+      const response = await apiFetch('/api/users', {}, identity);
       const data = await response.json();
       if (!response.ok || !Array.isArray(data?.users)) {
         throw new Error(data?.error || `Could not load customer accounts (HTTP ${response.status}).`);
       }
+      if (scope !== sessionScope.current) return;
       setDynamicUsers(data.users);
       setUserSyncStatus('connected');
     } catch (error) {
+      if (scope !== sessionScope.current) return;
       setDynamicUsers([]);
       setUserSyncStatus('error');
       throw error;
@@ -222,7 +241,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!currentUser || !['BUSINESS_OWNER', 'SUPER_ADMIN'].includes(currentRole)) return;
+    if (!currentUser || !workspaceReady || !['BUSINESS_OWNER', 'SUPER_ADMIN'].includes(currentRole)) return;
     setUserSyncStatus('loading');
     let hasLoggedSyncError = false;
     const syncUsers = () => {
@@ -236,7 +255,7 @@ export default function App() {
     syncUsers();
     const userInterval = setInterval(syncUsers, 3000);
     return () => clearInterval(userInterval);
-  }, [currentUser?.id, currentRole]);
+  }, [currentUser, currentRole, workspaceReady]);
 
   const handleAddCustomer = async (customerData: { name: string; email: string; role?: UserRole }) => {
     if (!currentUser) return;
@@ -399,21 +418,14 @@ export default function App() {
       .catch((error) => console.error('Confirming payment failed:', error));
   };
 
-  const handleLogin = (user: User) => {
-    setCurrentUser(user);
-    setCurrentRole(user.role);
-    const tenant = tenants.find((item) => item.id === user.tenantId);
-    if (tenant) setCurrentTenant(tenant);
-    if (user.role === 'CUSTOMER') {
-      setActiveTab('storefront');
-    } else {
-      setActiveTab('overview');
-    }
-  };
-
   const handleLogout = async () => {
+    beginAuthOperation();
     setAuthMode('signin');
-    if (firebaseAuth) await signOut(firebaseAuth);
+    try {
+      if (firebaseAuth) await signOut(firebaseAuth);
+    } finally {
+      await resumeSession();
+    }
   };
 
   const handleOpenSignUp = () => {
@@ -442,14 +454,31 @@ export default function App() {
     );
   }
 
-  if (!currentUser) {
+  if (sessionError && firebaseAuth?.currentUser) {
     return (
-      <LoginView
-        onSelectTenant={setCurrentTenant}
-        onLogin={handleLogin}
-        initialMode={authMode}
-      />
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+        <div className="max-w-lg rounded-2xl border bg-white p-6 space-y-4">
+          <h1 className="text-xl font-bold">Workspace could not be loaded</h1>
+          <p role="alert">{sessionError}</p>
+          <button onClick={() => void resumeSession()} className="px-4 py-2 bg-slate-900 text-white rounded-lg">Retry</button>
+          <button onClick={() => void handleLogout()} className="px-4 py-2">Sign out</button>
+        </div>
+      </div>
     );
+  }
+
+  if (!currentUser) {
+    return <LoginView onAuthOperationStart={beginAuthOperation} onAuthOperationEnd={resumeSession} initialMode={authMode} />;
+  }
+
+  if (!workspaceReady || setupRequested) {
+    return <WorkspaceSetupView
+      user={currentUser} pendingWorkspace={pendingWorkspace} notice={sessionNotice}
+      businessSetup={Boolean(setupRequested || pendingWorkspace)}
+      onAuthOperationStart={beginAuthOperation} onAuthOperationEnd={resumeSession}
+      onLogout={handleLogout}
+      onCancel={workspaceReady && !pendingWorkspace ? () => setSetupRequested(false) : undefined}
+    />;
   }
 
   return (
@@ -464,6 +493,13 @@ export default function App() {
         onLogout={handleLogout}
         onOpenConcurrencyModal={() => setIsConcurrencyModalOpen(true)}
       />
+
+      {currentRole === 'CUSTOMER' && (
+        <div className="bg-white border-b px-6 py-3 text-sm flex items-center justify-between">
+          <span>Want to sell with your own workspace?</span>
+          <button onClick={() => setSetupRequested(true)} className="font-semibold text-emerald-700">Create business workspace</button>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <main className={`flex-1 w-full ${currentRole === 'BUSINESS_OWNER' && activeTab === 'overview' ? '' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'}`}>
@@ -509,6 +545,8 @@ export default function App() {
                 />
               ) : currentRole === 'SUPPORT_STAFF' ? (
                 <CustomerSupportWorkspaceView
+                  key={`${currentUser.id}:${currentTenant.id}`}
+                  canManageSharedWhatsApp={currentUser.canManageSharedWhatsApp === true}
                   tenant={currentTenant}
                   orders={orders}
                   products={products}
@@ -575,14 +613,13 @@ export default function App() {
                   )}
                   renderAiAssistantView={() => (
                     <AiAssistantView
+                      key={`${currentUser.id}:${currentTenant.id}`}
                       tenant={currentTenant}
-                      products={products}
-                      inventories={inventories}
-                      orders={orders}
                     />
                   )}
                   renderWhatsAppView={() => (
                     <WhatsAppChannelView
+                      canManageSharedWhatsApp={currentUser.canManageSharedWhatsApp === true}
                       tenant={currentTenant}
                       products={products}
                       orders={orders}
@@ -592,6 +629,8 @@ export default function App() {
                   )}
                   renderSupportView={() => (
                     <CustomerSupportWorkspaceView
+                      key={`${currentUser.id}:${currentTenant.id}`}
+                      canManageSharedWhatsApp={currentUser.canManageSharedWhatsApp === true}
                       tenant={currentTenant}
                       orders={orders}
                       products={products}
@@ -631,6 +670,7 @@ export default function App() {
 
             {(activeTab === 'ai-sales' || activeTab === 'ai-assistant' || activeTab === 'whatsapp') && (
               <ConversationalSalesView
+                canManageSharedWhatsApp={currentUser.canManageSharedWhatsApp === true}
                 tenant={currentTenant}
                 products={products}
                 inventories={inventories}
@@ -644,6 +684,8 @@ export default function App() {
 
             {activeTab === 'support' && (
               <CustomerSupportWorkspaceView
+                key={`${currentUser.id}:${currentTenant.id}`}
+                canManageSharedWhatsApp={currentUser.canManageSharedWhatsApp === true}
                 tenant={currentTenant}
                 orders={orders}
                 products={products}

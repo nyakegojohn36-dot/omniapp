@@ -10,6 +10,7 @@ import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 import type { Request, RequestHandler } from 'express';
 import type {
   Order,
+  PendingBusinessWorkspace,
   Tenant,
   User,
   UserRole,
@@ -162,6 +163,13 @@ async function loadOrCreateUserProfile(
   return profile;
 }
 
+/** Use the original URL because authentication runs inside the /api mount. */
+export function allowsUnverifiedOnboardingRequest(req: Pick<Request, 'method' | 'originalUrl'>): boolean {
+  const path = req.originalUrl.split('?')[0].replace(/\/$/, '');
+  return (req.method === 'GET' && path === '/api/auth/me') ||
+    (['GET', 'PUT'].includes(req.method) && path === '/api/onboarding/business/pending');
+}
+
 export const authenticateRequest: RequestHandler = async (req, res, next) => {
   const authorization = req.header('authorization') || '';
   const match = authorization.match(/^Bearer\s+(.+)$/i);
@@ -187,7 +195,8 @@ export const authenticateRequest: RequestHandler = async (req, res, next) => {
     return;
   }
 
-  if (!decoded.email_verified && process.env.REQUIRE_EMAIL_VERIFIED === 'true') {
+  const onboardingReadOrDraft = allowsUnverifiedOnboardingRequest(req);
+  if (!decoded.email_verified && process.env.REQUIRE_EMAIL_VERIFIED === 'true' && !onboardingReadOrDraft) {
     res.status(403).json({ error: 'Verify your email address before accessing SokoFlow.' });
     return;
   }
@@ -211,6 +220,59 @@ export function requireRoles(...roles: UserRole[]): RequestHandler {
   };
 }
 
+/** Shared provider credentials belong to the configured default workspace only. */
+export function canManageSharedWhatsApp(user: AuthenticatedUser | undefined): boolean {
+  if (!user?.emailVerified) return false;
+  if (user.role === 'SUPER_ADMIN') return true;
+  return user.role === 'BUSINESS_OWNER' &&
+    user.tenantId === (process.env.DEFAULT_TENANT_ID || 'tenant-nordic') &&
+    ownerAllowlist().includes(user.email.trim().toLowerCase());
+}
+
+export const requireSharedWhatsAppAccess: RequestHandler = (req, res, next) => {
+  if (!canManageSharedWhatsApp(req.authUser)) {
+    res.status(403).json({ error: 'This workspace has no authorized WhatsApp connection. Shared provider access is restricted to platform operators.' });
+    return;
+  }
+  next();
+};
+
+/** Mounted before all shared provider controls; only tenant-safe reads bypass it. */
+export const sharedWhatsAppAccessPolicy: RequestHandler = (req, res, next) => {
+  const path = req.path.replace(/\/$/, '');
+  if (req.method === 'GET' && ['/config', '/messages'].includes(path)) {
+    next();
+    return;
+  }
+  requireSharedWhatsAppAccess(req, res, next);
+};
+
+export async function getPendingBusinessWorkspace(userId: string): Promise<PendingBusinessWorkspace | null> {
+  return durableRecord('getPendingBusinessWorkspace', async () => {
+    const snapshot = await getFirestoreDb().collection('businessOnboarding').doc(documentId(userId)).get();
+    const draft = snapshot.data();
+    return draft ? { businessName: draft.businessName, currency: draft.currency } : null;
+  });
+}
+
+export async function savePendingBusinessWorkspace(userId: string, draft: PendingBusinessWorkspace): Promise<void> {
+  try {
+    const db = getFirestoreDb();
+    await db.runTransaction(async (transaction) => {
+      const user = await transaction.get(db.collection('users').doc(userId));
+      if (!user.exists || user.data()?.role !== 'CUSTOMER') {
+        throw new WorkspaceProvisioningConflictError('Only a customer account can start business workspace setup.');
+      }
+      transaction.set(db.collection('businessOnboarding').doc(documentId(userId)), {
+        ...draft, updatedAt: new Date().toISOString(),
+      });
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceProvisioningConflictError) throw error;
+    throw new CommerceStateUnavailableError('Business setup could not be saved. Try again shortly.', error);
+  }
+}
+
 export class WorkspaceProvisioningConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -224,6 +286,7 @@ export async function provisionTenantForOwner(tenant: Tenant, ownerId: string): 
   const users = db.collection('users');
   const userRef = users.doc(ownerId);
   const tenantRef = db.collection('tenants').doc(tenant.id);
+  const pendingRef = db.collection('businessOnboarding').doc(documentId(ownerId));
   const now = new Date().toISOString();
   let owner: User | undefined;
 
@@ -247,6 +310,7 @@ export async function provisionTenantForOwner(tenant: Tenant, ownerId: string): 
           email: typeof profile.email === 'string' ? profile.email : '',
           role: 'BUSINESS_OWNER',
         };
+        transaction.delete(pendingRef);
         return;
       }
       if (!userSnapshot.exists || userSnapshot.data()?.role !== 'CUSTOMER') {
@@ -267,6 +331,7 @@ export async function provisionTenantForOwner(tenant: Tenant, ownerId: string): 
       };
       transaction.create(tenantRef, tenant);
       transaction.update(userRef, { tenantId: tenant.id, role: 'BUSINESS_OWNER', updatedAt: now });
+      transaction.delete(pendingRef);
     });
   } catch (error) {
     if (error instanceof WorkspaceProvisioningConflictError) throw error;

@@ -200,6 +200,36 @@ test('Authenticated web chat never sends Meta messages or creates WhatsApp order
   assert.ok(service.getMessages().every((message) => message.sourceMode === 'SIMULATED_DEMO'));
 });
 
+test('Request-local web chat isolates matching sender IDs across tenants and from provider messages', async () => {
+  const provider = new WhatsAppCloudService({ mode: 'LIVE_PRODUCTION', phoneNumberId: 'test-provider' });
+  const first = new WhatsAppCloudService();
+  const second = new WhatsAppCloudService();
+  const { stock } = warehouse();
+  const sender = 'web-shared-account-id';
+  const message = {
+    fromNumber: sender, customerName: 'Web Customer', stock: await stock(),
+    products: SEED_PRODUCTS, orders: [...SEED_ORDERS],
+  };
+  await first.processWebChatMessage({ ...message, tenant: SEED_TENANTS[0],
+    messageId: 'web-tenant-a', textBody: 'I want to buy 2 TSHIRT001' });
+  const saved = first.getSession(sender, message.customerName);
+  const restored = new WhatsAppCloudService();
+  restored.restoreSession(saved);
+  assert.deepEqual(restored.getSession(sender, message.customerName), saved);
+  assert.notDeepEqual(second.getSession(sender, message.customerName), saved);
+  assert.equal(provider.getMessages().length, 0);
+
+  await second.processWebChatMessage({ ...message, tenant: { ...SEED_TENANTS[0], id: 'tenant-web-b' },
+    messageId: 'web-tenant-b', textBody: 'Hello from another workspace' });
+  assert.ok(first.getMessages().some((record) => record.textBody === 'I want to buy 2 TSHIRT001'));
+  assert.ok(second.getMessages().some((record) => record.textBody === 'Hello from another workspace'));
+  assert.equal(first.getMessages().some((record) => record.textBody === 'Hello from another workspace'), false);
+  assert.equal(second.getMessages().some((record) => record.textBody === 'I want to buy 2 TSHIRT001'), false);
+  assert.equal(provider.getMessages().length, 0);
+  assert.equal(first.getConfig().hasAccessToken, false);
+  assert.equal(second.getConfig().hasAccessToken, false);
+});
+
 test('WhatsApp Cloud Service: refuses to order out-of-stock item and suggests alternatives', async () => {
   const { state, stock } = warehouse();
   const service = new WhatsAppCloudService();

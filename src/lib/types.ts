@@ -31,6 +31,13 @@ export interface User {
   email: string;
   role: UserRole;
   avatarUrl?: string;
+  emailVerified?: boolean;
+  canManageSharedWhatsApp?: boolean;
+}
+
+export interface PendingBusinessWorkspace {
+  businessName: string;
+  currency: string;
 }
 
 export interface ProductVariant {

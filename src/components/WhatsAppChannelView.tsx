@@ -25,6 +25,7 @@ import { Order, Product, Tenant, WhatsAppMessageRecord } from '../lib/types.ts';
 import { apiFetch } from '../lib/firebaseClient.ts';
 
 interface WhatsAppChannelViewProps {
+  canManageSharedWhatsApp?: boolean;
   tenant: Tenant;
   products: Product[];
   orders: Order[];
@@ -43,7 +44,19 @@ interface CustomerConversation {
   humanTakeover: boolean;
 }
 
-export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
+export const WhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = (props) => {
+  if (props.canManageSharedWhatsApp !== true) {
+    return (
+      <section className="bg-white border border-slate-200 rounded-2xl p-8 space-y-3">
+        <h2 className="text-lg font-bold">WhatsApp is not connected to this workspace</h2>
+        <p className="text-sm text-slate-600">Shared WhatsApp provider controls are restricted to authorized platform operators. Per-business connections are not available yet. Your web storefront and web chat remain available.</p>
+      </section>
+    );
+  }
+  return <ConnectedWhatsAppChannelView key={props.tenant.id} {...props} />;
+};
+
+const ConnectedWhatsAppChannelView: React.FC<WhatsAppChannelViewProps> = ({
   tenant,
   products,
   orders,

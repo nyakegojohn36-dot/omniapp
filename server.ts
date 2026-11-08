@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { WhatsAppCloudService } from './src/lib/whatsappCloudService.ts';
+import { ASSISTANT_ROLES, AssistantError, createGeminiAssistant, readGeminiConfig } from './src/lib/geminiAssistant.ts';
 import { createCommerceRuntime } from './src/lib/commerceRuntime.ts';
 import { CommerceStateUnavailableError } from './src/lib/firestoreCommerceState.ts';
 import { createOrderFromIntake } from './src/lib/orderIntake.ts';
@@ -43,6 +44,10 @@ import { availabilityBySku, type AdjustStockCommand } from './src/lib/commerceSt
 import type { Order, OrderAddress, OrderStatus, Product, Tenant, WarehouseInventory } from './src/lib/types.ts';
 import {
   authenticateRequest,
+  canManageSharedWhatsApp,
+  getPendingBusinessWorkspace,
+  savePendingBusinessWorkspace,
+  sharedWhatsAppAccessPolicy,
   claimWebhookMessage,
   consumeWebChatQuota,
   getRequestUser,
@@ -134,6 +139,19 @@ app.set('trust proxy', 1);
 // Commerce source of truth. Stock, reservations, and the catalogue are durable;
 // no part of this process keeps an authoritative copy any more.
 const commerce = createCommerceRuntime();
+const geminiConfig = readGeminiConfig();
+const assistant = createGeminiAssistant(geminiConfig, {
+  consumeQuota: (userId, scopedTenantId) => consumeWebChatQuota(`assistant-${userId}`, scopedTenantId),
+  readContext: async (scopedTenantId) => {
+    const [tenant, products, orders, stock] = await Promise.all([
+      tenants.require(scopedTenantId),
+      commerce.state.listProducts(scopedTenantId),
+      listTenantOrders(scopedTenantId),
+      commerce.conversationStock(scopedTenantId),
+    ]);
+    return { tenant, products, orders, stock };
+  },
+});
 // Tenant rules (currency, VAT, reservation TTL) are data. The public webhook has
 // no caller identity, so it alone uses this configured default tenant.
 const tenants = createTenantRepository({ seed: SEED_TENANTS });
@@ -638,9 +656,12 @@ app.post(
       commerce.conversationStock(user.tenantId),
       commerce.state.listProducts(user.tenantId),
     ]);
-    if (persistedSession) whatsappService.restoreSession(persistedSession);
+    // Web chat has no provider credentials or shared message buffer. A request
+    // restores only this account's tenant-scoped conversation.
+    const webChatService = new WhatsAppCloudService();
+    if (persistedSession) webChatService.restoreSession(persistedSession);
 
-    const result = await whatsappService.processWebChatMessage({
+    const result = await webChatService.processWebChatMessage({
       messageId,
       fromNumber,
       customerName: user.name,
@@ -650,11 +671,8 @@ app.post(
       orders: persistedOrders,
       tenant: await tenants.require(user.tenantId),
     });
-    const session = whatsappService.getSession(fromNumber, user.name);
-    await Promise.all([
-      saveWhatsAppMessages(user.tenantId, whatsappService.getMessages()),
-      saveWhatsAppSession(session, user.tenantId),
-    ]);
+    const session = webChatService.getSession(fromNumber, user.name);
+    await saveWhatsAppSession(session, user.tenantId);
     res.json({
       status: 'PROCESSED',
       reply: result.responseText,
@@ -663,6 +681,19 @@ app.post(
     });
   })
 );
+
+app.post('/api/assistant/chat', requireRoles(...ASSISTANT_ROLES), asyncRoute(async (req, res) => {
+  try {
+    res.json(await assistant.chat(getRequestUser(req), req.body?.text));
+  } catch (error) {
+    if (error instanceof AssistantError) {
+      if (error.status === 429) res.setHeader('Retry-After', '60');
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+}));
 
 app.get('/health', (_req: Request, res: Response) => {
   const config = whatsappService.getConfig();
@@ -682,6 +713,12 @@ app.get('/health', (_req: Request, res: Response) => {
       replyConfigurationComplete: config.mode !== 'SIMULATED_DEMO' &&
         Boolean(config.hasAccessToken) &&
         Boolean(config.phoneNumberId),
+    },
+    assistant: {
+      configured: geminiConfig.enabled && Boolean(geminiConfig.project),
+      provider: 'GEMINI_VERTEX_AI',
+      model: geminiConfig.model,
+      readOnly: true,
     },
     authentication: {
       projectConfigured: Boolean(
@@ -704,8 +741,37 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 app.get('/api/auth/me', (req: Request, res: Response) => {
-  res.json({ user: getRequestUser(req) });
+  const user = getRequestUser(req);
+  res.json({
+    user: { ...user, canManageSharedWhatsApp: canManageSharedWhatsApp(user) },
+    requiresEmailVerification: process.env.REQUIRE_EMAIL_VERIFIED === 'true',
+  });
 });
+
+app.get('/api/onboarding/business/pending', commerceRoute(async (req, res) => {
+  const user = getRequestUser(req);
+  res.json({ pendingWorkspace: user.role === 'CUSTOMER' ? await getPendingBusinessWorkspace(user.id) : null });
+}));
+
+app.put('/api/onboarding/business/pending', requireRoles('CUSTOMER'), commerceRoute(async (req, res) => {
+  const user = getRequestUser(req);
+  // Apply the same validation as final provisioning, without trusting a client UID.
+  const validated = normalizeTenant({
+    id: 'pending-workspace', name: req.body?.businessName,
+    currency: req.body?.currency ?? 'KES', channels: ['WEB'],
+  });
+  const pendingWorkspace = { businessName: validated.name, currency: validated.currency };
+  try {
+    await savePendingBusinessWorkspace(user.id, pendingWorkspace);
+    res.json({ pendingWorkspace });
+  } catch (error) {
+    if (error instanceof WorkspaceProvisioningConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
+}));
 
 app.post(
   '/api/onboarding/business',
@@ -723,7 +789,18 @@ app.post(
 
     const requestId = randomUUID();
     const tenantId = `tenant-${createHash('sha256').update(user.id).digest('hex').slice(0, 32)}`;
-    const name = req.body?.businessName;
+    if (isRetry) {
+      if (user.tenantId !== tenantId) {
+        res.status(409).json({ error: 'This account already belongs to another business workspace.' });
+        return;
+      }
+      const savedTenant = await tenants.require(tenantId);
+      const owner = await provisionTenantForOwner(savedTenant, user.id);
+      res.json({ tenant: savedTenant, user: owner });
+      return;
+    }
+    const draft = req.body?.businessName === undefined ? await getPendingBusinessWorkspace(user.id) : null;
+    const name = req.body?.businessName ?? draft?.businessName;
     const slugSource = typeof req.body?.slug === 'string' ? req.body.slug : name;
     const slugBase = String(slugSource ?? '')
       .trim()
@@ -735,7 +812,7 @@ app.post(
       id: tenantId,
       name,
       slug: `${slugBase}-${requestId.slice(0, 8)}`,
-      currency: req.body?.currency ?? 'KES',
+      currency: req.body?.currency ?? draft?.currency ?? 'KES',
       locale: 'en-KE',
       timezone: 'Africa/Nairobi',
       taxRatePercent: 0,
@@ -875,14 +952,21 @@ app.put(
   })
 );
 
+// Apply one policy to every shared provider operation, including future routes.
+// Webhooks retain their signature/challenge checks; reads below are tenant-safe.
+app.use('/api/whatsapp', sharedWhatsAppAccessPolicy);
+
 // 3. Configuration Management API (GET & POST)
 app.get('/api/whatsapp/config', (req: Request, res: Response) => {
   const user = getRequestUser(req);
   const conf = whatsappService.getConfig();
-  if (user.role === 'BUSINESS_OWNER' || user.role === 'SUPER_ADMIN') {
+  if (user.tenantId !== tenantId && !canManageSharedWhatsApp(user)) {
+    return res.json({ mode: 'SIMULATED_DEMO', displayPhoneNumber: '', connected: false });
+  }
+  if (canManageSharedWhatsApp(user)) {
     return res.json({
       ...conf,
-      tenantId: user.tenantId,
+      tenantId,
       webhookCallbackUrl: `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`,
     });
   }
@@ -944,7 +1028,7 @@ app.post(
 // 4. Outbound / Test Message Trigger (POST)
 app.post(
   '/api/whatsapp/send',
-  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF'),
+  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
   const { to, message, template } = req.body;
   if (!to || (!message && !template)) {
@@ -965,16 +1049,16 @@ app.post(
 // 5. Message History & Webhook Logs (GET & POST)
 app.get(
   '/api/whatsapp/messages',
-  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF'),
+  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
     const user = getRequestUser(req);
-    res.json({ messages: await listTenantMessages(user.tenantId) });
+    res.json({ messages: await listTenantMessages(canManageSharedWhatsApp(user) ? tenantId : user.tenantId) });
   })
 );
 
 app.post(
   '/api/whatsapp/messages',
-  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF'),
+  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
   const { toNumber, customerName, textBody, orderId } = req.body;
   if (!toNumber || !textBody) {
@@ -982,15 +1066,14 @@ app.post(
     return;
   }
   const msg = whatsappService.sendAgentMessage(toNumber, customerName || 'Customer', textBody, orderId);
-  const user = getRequestUser(req);
-  await saveWhatsAppMessages(user.tenantId, [msg]);
+  await saveWhatsAppMessages(tenantId, [msg]);
   res.json({ success: true, message: msg });
   })
 );
 
 app.get(
   '/api/whatsapp/logs',
-  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF'),
+  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF', 'SUPER_ADMIN'),
   (_req: Request, res: Response) => {
   res.json({
     logs: whatsappService.getWebhookLogs(),
@@ -1001,7 +1084,7 @@ app.get(
 // 6. Reset Session
 app.post(
   '/api/whatsapp/reset',
-  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF'),
+  requireRoles('BUSINESS_OWNER', 'SUPPORT_STAFF', 'SUPER_ADMIN'),
   (req: Request, res: Response) => {
   const { phoneNumber } = req.body;
   if (phoneNumber) {
@@ -1014,7 +1097,7 @@ app.post(
 // 7. Live Meta Graph API Status Check
 app.get(
   '/api/whatsapp/status',
-  requireRoles('BUSINESS_OWNER'),
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
   const phoneId = req.query.phoneId as string | undefined;
   const result = await whatsappService.fetchPhoneLiveStatus(phoneId);
@@ -1025,7 +1108,7 @@ app.get(
 // 8. Submit 6-digit SMS verification code to Meta
 app.post(
   '/api/whatsapp/verify-code',
-  requireRoles('BUSINESS_OWNER'),
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
   const { code, phoneId } = req.body;
   if (!code) {
@@ -1040,7 +1123,7 @@ app.post(
 // 9. Request a new SMS or Voice code from Meta
 app.post(
   '/api/whatsapp/request-code',
-  requireRoles('BUSINESS_OWNER'),
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
   const { method, language, phoneId } = req.body;
   const result = await whatsappService.requestPhoneCode(method || 'SMS', language || 'en', phoneId);
@@ -1051,7 +1134,7 @@ app.post(
 // 10. Direct Registration with 6-digit PIN
 app.post(
   '/api/whatsapp/register',
-  requireRoles('BUSINESS_OWNER'),
+  requireRoles('BUSINESS_OWNER', 'SUPER_ADMIN'),
   asyncRoute(async (req, res) => {
   const { pin, phoneId } = req.body;
   const result = await whatsappService.registerPhone(pin || '123456', phoneId);
