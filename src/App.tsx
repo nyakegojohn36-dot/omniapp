@@ -151,8 +151,12 @@ export default function App() {
           throw new Error(data?.error || `Could not restore sign-in (HTTP ${response.status}).`);
         }
         const user = data.user as User;
-        const tenant = tenants.find((item) => item.id === user.tenantId);
-        if (tenant) setCurrentTenant(tenant);
+        const tenantResponse = await apiFetch('/api/tenant', {}, firebaseUser);
+        const tenantData = await tenantResponse.json();
+        if (!tenantResponse.ok || !tenantData?.tenant) {
+          throw new Error(tenantData?.error || `Could not load workspace (HTTP ${tenantResponse.status}).`);
+        }
+        setCurrentTenant(tenantData.tenant as Tenant);
         setCurrentUser(user);
         setCurrentRole(user.role);
         setActiveTab(user.role === 'CUSTOMER' ? 'storefront' : 'overview');
@@ -441,8 +445,6 @@ export default function App() {
   if (!currentUser) {
     return (
       <LoginView
-        tenants={tenants}
-        currentTenant={currentTenant}
         onSelectTenant={setCurrentTenant}
         onLogin={handleLogin}
         initialMode={authMode}

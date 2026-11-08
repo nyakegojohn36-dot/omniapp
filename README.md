@@ -24,10 +24,14 @@ npm run dev               # http://localhost:3000 — Vite runs in middleware mo
 That single process serves the UI and `/api/*`. There is no second dev server to
 start.
 
-**First sign-in.** Authentication is Firebase Auth. The address you put in
-`OWNER_EMAILS` becomes `BUSINESS_OWNER` on first sign-in; everyone else
-self-signs-up as `CUSTOMER`. Leave `OWNER_EMAILS` empty in the repository — an
-owner address in source is an open door.
+**Accounts and workspaces.** Authentication is Firebase Auth. An address in
+`OWNER_EMAILS` becomes an owner of the configured default workspace. Other
+people can sign up either as a customer or create a business workspace. Business
+workspace creation requires a verified email and atomically creates an isolated
+tenant with the registering user as its first owner. New workspaces start with
+an empty catalogue; no real business or product data is required to operate the
+platform. Leave `OWNER_EMAILS` empty in the repository — an owner address in
+source is an open door.
 
 ---
 
@@ -40,11 +44,13 @@ Read this before demoing.
 | Order state machine, pricing, inventory, reservations | Real. Deterministic, unit-tested, server-authoritative. |
 | M-Pesa STK push and settlement | Real, when Daraja credentials are set. Without them checkout returns 503 rather than inventing a receipt. |
 | Returns (claim → warehouse receipt → inspection → refund) | Real. Stock moves only on inspection; the refund needs an owner's attestation. |
+| Business workspace onboarding | Real. Verified users can create an isolated workspace; its catalogue starts empty and the creator becomes its owner. |
 | WhatsApp channel | Real via the Meta Cloud API when configured; otherwise a clearly-labelled simulated mode. |
 | Card, Airtel Money, Pesalink | **Not implemented.** They are selectable in checkout, create an order awaiting payment, and charge nothing. |
 | KRA eTIMS fiscal receipts | **Not implemented.** Invoices are shop documents built from the persisted order. No fiscal device, no transmission to KRA, no VAT certification. |
 | Courier integration | **Not implemented.** No Sendy, Fargo or G4S account and no rider dispatch; carrier and tracking number are typed in at dispatch. |
 | AI storefront assistant | **Keyword responses, not a model.** It reads live catalogue and stock, but it is not an LLM. |
+| Per-business provider credentials | **Not implemented.** WhatsApp and M-Pesa credentials are service-level environment/secrets, not tenant-specific connections. Keep live provider calls disabled for demo workspaces. |
 | Subscription plans / billing | **Removed.** There is no tier, no metered AI budget and no invoice record. |
 | Browser-level UI tests | **None.** The UI is covered by typecheck and build only. |
 
@@ -144,7 +150,7 @@ M-Pesa callback.
 | Group | Routes |
 | :--- | :--- |
 | Health | `GET /health` |
-| Tenants | `GET /api/tenant`, `PATCH /api/tenant`, `GET/POST /api/tenants` |
+| Tenants | `GET /api/tenant`, `PATCH /api/tenant`, `GET/POST /api/tenants`, `POST /api/onboarding/business` |
 | Users | `GET/POST /api/users`, `PUT /api/users/:id/role` |
 | Orders | `GET/POST /api/orders`, `PUT /api/orders/:id`, `POST /api/orders/:id/payment` |
 | M-Pesa | `POST /api/orders/:id/mpesa/stk-push`, `POST /api/payments/mpesa/callback`, `GET /api/payments/mpesa/:checkoutRequestId/status`, `POST /api/payments/mpesa/simulate` |
@@ -307,12 +313,13 @@ The application is deployed, but WhatsApp replies and M-Pesa payments remain
 unconfigured. Do not treat a green deployment as proof that either integration
 can transact.
 
-1. **Owner and real catalogue.** Open the production URL and sign in with the
-   address configured in the repository's `OWNER_EMAILS` variable. Add your actual
-   products, prices, images and stock in Inventory & Catalog. Automatic demo
-   seeding is now disabled, but the existing nine demo products were preserved;
-   this setting does not delete existing data. Once real stock is ready, request
-   removal of the demo records. Do not sell the reference products as real stock.
+1. **Business onboarding and catalogue.** This platform does not represent a
+   house retail business. A business owner can create a workspace through
+   Sign Up → Business workspace after verifying their email. Each workspace
+   starts empty; its owner adds that business's own products, prices, images and
+   stock. Automatic demo seeding is disabled in production, but the original
+   tenant's nine reference products were preserved. Do not sell those reference
+   products as real stock or copy them into a customer's workspace.
 
 2. **WhatsApp credentials.** In Meta Business Settings, create a System User
    token with access to your WhatsApp business assets and the required

@@ -6,13 +6,16 @@ import {
   listTenantOrders,
   listTenantReturns,
   nextOrderSequence,
+  provisionTenantForOwner,
   requireRoles,
   saveOrder,
   setFirestoreForTests,
+  WorkspaceProvisioningConflictError,
 } from './firebaseAdmin.ts';
 import { CommerceStateUnavailableError } from './commerceState.ts';
 import { SEED_ORDERS } from './sampleData.ts';
 import type { Firestore } from 'firebase-admin/firestore';
+import type { Tenant } from './types.ts';
 
 test('Firebase API role guard rejects missing and customer roles', () => {
   const guard = requireRoles('BUSINESS_OWNER');
@@ -131,6 +134,87 @@ test('firebaseAdmin: an unreachable return store fails closed too', async () => 
     setFirestoreForTests(null);
   }
 });
+
+test('firebaseAdmin: workspace provisioning fails closed when Firestore is unavailable', async () => {
+  setFirestoreForTests(unreachableFirestore());
+
+  try {
+    await assert.rejects(
+      () => provisionTenantForOwner({} as Tenant, 'unreachable-owner'),
+      unavailable
+    );
+  } finally {
+    setFirestoreForTests(null);
+  }
+});
+
+if (process.env.FIRESTORE_EMULATOR_HOST) {
+  test('firebaseAdmin: creates a tenant and its initial owner atomically', async () => {
+    const { getApps, initializeApp } = await import('firebase-admin/app');
+    const { getFirestore } = await import('firebase-admin/firestore');
+    const app = getApps()[0] || initializeApp({ projectId: 'demo-sokoflow' });
+    const db = getFirestore(app);
+    const ownerId = `onboarding-owner-${Date.now()}`;
+    const tenantId = `tenant-onboarding-${Date.now()}`;
+    const tenant: Tenant = {
+      id: tenantId,
+      name: 'Onboarding Test Workspace',
+      slug: `onboarding-${Date.now()}`,
+      currency: 'KES',
+      locale: 'en-KE',
+      timezone: 'Africa/Nairobi',
+      taxRatePercent: 0,
+      taxInclusive: true,
+      reservationTTLMinutes: 15,
+      channels: ['WEB'],
+    };
+
+    setFirestoreForTests(db);
+    try {
+      await db.collection('users').doc(ownerId).set({
+        id: ownerId,
+        tenantId: 'tenant-nordic',
+        name: 'Workspace Owner',
+        email: `${ownerId}@example.test`,
+        role: 'CUSTOMER',
+      });
+
+      const owner = await provisionTenantForOwner(tenant, ownerId);
+      assert.equal(owner.role, 'BUSINESS_OWNER');
+      assert.equal(owner.tenantId, tenantId);
+      assert.equal((await db.collection('tenants').doc(tenantId).get()).exists, true);
+
+      const retriedOwner = await provisionTenantForOwner(
+        { ...tenant, name: 'Ignored Retry Name' },
+        ownerId
+      );
+      assert.equal(retriedOwner.role, 'BUSINESS_OWNER');
+      assert.equal(
+        (await db.collection('tenants').doc(tenantId).get()).data()?.name,
+        tenant.name
+      );
+
+      const savedProfile = (await db.collection('users').doc(ownerId).get()).data();
+      assert.equal(savedProfile?.role, 'BUSINESS_OWNER');
+      assert.equal(savedProfile?.tenantId, tenantId);
+
+      const secondTenant = { ...tenant, id: `${tenantId}-second`, slug: `${tenant.slug}-second` };
+      await assert.rejects(
+        () => provisionTenantForOwner(secondTenant, ownerId),
+        (error: unknown) => error instanceof WorkspaceProvisioningConflictError
+      );
+      assert.equal((await db.collection('tenants').doc(secondTenant.id).get()).exists, false);
+    } finally {
+      await db.collection('users').doc(ownerId).delete();
+      await db.collection('tenants').doc(tenantId).delete();
+      setFirestoreForTests(null);
+    }
+  });
+} else {
+  test('firebaseAdmin: tenant-owner provisioning contract requires Firestore emulator', {
+    skip: true,
+  }, () => {});
+}
 
 test('firebaseAdmin: memory mode never touches the database, by explicit opt-in', async () => {
   process.env.COMMERCE_STATE_BACKEND = 'memory';

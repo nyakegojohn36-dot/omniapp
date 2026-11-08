@@ -10,6 +10,7 @@ import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 import type { Request, RequestHandler } from 'express';
 import type {
   Order,
+  Tenant,
   User,
   UserRole,
   WhatsAppCustomerSession,
@@ -208,6 +209,75 @@ export function requireRoles(...roles: UserRole[]): RequestHandler {
     }
     next();
   };
+}
+
+export class WorkspaceProvisioningConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkspaceProvisioningConflictError';
+  }
+}
+
+/** Creates a tenant and makes its authenticated customer the initial owner atomically. */
+export async function provisionTenantForOwner(tenant: Tenant, ownerId: string): Promise<User> {
+  const db = getFirestoreDb();
+  const users = db.collection('users');
+  const userRef = users.doc(ownerId);
+  const tenantRef = db.collection('tenants').doc(tenant.id);
+  const now = new Date().toISOString();
+  let owner: User | undefined;
+
+  try {
+    await db.runTransaction(async (transaction) => {
+      const [userSnapshot, tenantSnapshot] = await Promise.all([
+        transaction.get(userRef),
+        transaction.get(tenantRef),
+      ]);
+      const profile = userSnapshot.data() || {};
+      if (
+        userSnapshot.exists &&
+        profile.role === 'BUSINESS_OWNER' &&
+        profile.tenantId === tenant.id &&
+        tenantSnapshot.exists
+      ) {
+        owner = {
+          id: ownerId,
+          tenantId: tenant.id,
+          name: typeof profile.name === 'string' ? profile.name : 'Business Owner',
+          email: typeof profile.email === 'string' ? profile.email : '',
+          role: 'BUSINESS_OWNER',
+        };
+        return;
+      }
+      if (!userSnapshot.exists || userSnapshot.data()?.role !== 'CUSTOMER') {
+        throw new WorkspaceProvisioningConflictError(
+          'Only a customer account can create a new business workspace.'
+        );
+      }
+      if (tenantSnapshot.exists) {
+        throw new WorkspaceProvisioningConflictError('This workspace is already provisioned.');
+      }
+
+      owner = {
+        id: ownerId,
+        tenantId: tenant.id,
+        name: typeof profile.name === 'string' ? profile.name : 'Business Owner',
+        email: typeof profile.email === 'string' ? profile.email : '',
+        role: 'BUSINESS_OWNER',
+      };
+      transaction.create(tenantRef, tenant);
+      transaction.update(userRef, { tenantId: tenant.id, role: 'BUSINESS_OWNER', updatedAt: now });
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceProvisioningConflictError) throw error;
+    throw new CommerceStateUnavailableError(
+      'Business workspace storage is unavailable. Try again shortly.',
+      error
+    );
+  }
+
+  if (!owner) throw new Error('Workspace provisioning completed without an owner profile.');
+  return owner;
 }
 
 export async function createTenantCustomer(

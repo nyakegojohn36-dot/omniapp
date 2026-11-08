@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import express, { type Request, type Response, type NextFunction, type RequestHandler } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'node:path';
@@ -20,6 +20,7 @@ import {
 import { applyStkOutcome, handleStkCallback, simulateSettlement } from './src/lib/mpesaSettlement.ts';
 import {
   createTenantRepository,
+  normalizeTenant,
   TenantValidationError,
   UnknownTenantError,
 } from './src/lib/tenantRepository.ts';
@@ -53,6 +54,8 @@ import {
   listTenantOrders,
   listTenantReturns,
   createTenantCustomer,
+  provisionTenantForOwner,
+  WorkspaceProvisioningConflictError,
   listTenantUsers,
   nextOrderSequence,
   nextReturnSequence,
@@ -703,6 +706,57 @@ app.get('/health', (_req: Request, res: Response) => {
 app.get('/api/auth/me', (req: Request, res: Response) => {
   res.json({ user: getRequestUser(req) });
 });
+
+app.post(
+  '/api/onboarding/business',
+  commerceRoute(async (req, res) => {
+    const user = getRequestUser(req);
+    if (!user.emailVerified) {
+      res.status(403).json({ error: 'Verify your email address before creating a workspace.' });
+      return;
+    }
+    const isRetry = user.role === 'BUSINESS_OWNER';
+    if (user.role !== 'CUSTOMER' && !isRetry) {
+      res.status(409).json({ error: 'This account cannot create another business workspace.' });
+      return;
+    }
+
+    const requestId = randomUUID();
+    const tenantId = `tenant-${createHash('sha256').update(user.id).digest('hex').slice(0, 32)}`;
+    const name = req.body?.businessName;
+    const slugSource = typeof req.body?.slug === 'string' ? req.body.slug : name;
+    const slugBase = String(slugSource ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 42) || 'workspace';
+    const tenant = normalizeTenant({
+      id: tenantId,
+      name,
+      slug: `${slugBase}-${requestId.slice(0, 8)}`,
+      currency: req.body?.currency ?? 'KES',
+      locale: 'en-KE',
+      timezone: 'Africa/Nairobi',
+      taxRatePercent: 0,
+      taxInclusive: true,
+      reservationTTLMinutes: 15,
+      channels: ['WEB'],
+    });
+
+    try {
+      const owner = await provisionTenantForOwner(tenant, user.id);
+      const savedTenant = await tenants.require(tenant.id);
+      res.status(isRetry ? 200 : 201).json({ tenant: savedTenant, user: owner });
+    } catch (error) {
+      if (error instanceof WorkspaceProvisioningConflictError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+  })
+);
 
 // 2b. Tenant configuration. Reads are open to any signed-in member of the
 // workspace; writes are owner/admin only. Registration is platform-operator only.
